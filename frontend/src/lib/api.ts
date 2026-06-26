@@ -1,17 +1,26 @@
 import type {
+  BatchCreateRequest,
+  BatchCreateResponse,
+  BatchProgressResponse,
+  BatchResponse,
+  ComparisonEnginesResponse,
+  ComparisonRunsResponse,
   Document,
   DocumentListResponse,
   Engine,
   EngineComparisonResponse,
+  EngineRanking,
   GTPageResult,
   PageResult,
   PageResultListResponse,
+  ReportData,
   Run,
   RunCreateRequest,
   RunCreateResponse,
   RunListResponse,
   RunScoresByPageResponse,
   RunScoresResponse,
+  SummaryStatistics,
   WordComparison,
 } from "./types.ts";
 
@@ -237,5 +246,86 @@ export async function getWordComparison(
   return request<WordComparison>(
     "GET",
     `/runs/${runId}/results/${pageNumber}/compare?word_index=${wordIndex}`,
+  );
+}
+
+// ── Report endpoints ───────────────────────────────────────────────────────
+
+export async function getReportSummary(): Promise<SummaryStatistics> {
+  return request<SummaryStatistics>("GET", "/reports/summary");
+}
+
+export async function getEngineRankings(): Promise<EngineRanking[]> {
+  return request<EngineRanking[]>("GET", "/reports/engines");
+}
+
+export async function getReportJson(
+  runIds?: string[],
+): Promise<ReportData> {
+  const params = new URLSearchParams();
+  params.set("format", "json");
+  if (runIds && runIds.length > 0) params.set("run_ids", runIds.join(","));
+  return request<ReportData>("GET", `/reports/export?${params.toString()}`);
+}
+
+export function getReportDownloadUrl(
+  format: "csv" | "json" | "html",
+  runIds?: string[],
+): string {
+  const params = new URLSearchParams();
+  params.set("format", format);
+  if (runIds && runIds.length > 0) params.set("run_ids", runIds.join(","));
+  return `${BASE_URL}/reports/export?${params.toString()}`;
+}
+
+// ── Batch endpoints ───────────────────────────────────────────────────────
+
+export async function createBatch(
+  pdfIds: string[],
+  engineSlugs: string[],
+  config?: Record<string, unknown>,
+): Promise<BatchCreateResponse> {
+  return request<BatchCreateResponse>("POST", "/batch", {
+    pdf_ids: pdfIds,
+    engine_slugs: engineSlugs,
+    config: config ?? null,
+  } as BatchCreateRequest);
+}
+
+export async function getBatch(id: string): Promise<BatchResponse> {
+  return request<BatchResponse>("GET", `/batch/${id}`);
+}
+
+export async function getBatchProgress(id: string): Promise<BatchProgressResponse> {
+  return request<BatchProgressResponse>("GET", `/batch/${id}/progress`);
+}
+
+// ── Comparison endpoints ──────────────────────────────────────────────────
+
+export async function compareRuns(
+  runIds: string[],
+  gtVersionId?: string,
+): Promise<ComparisonRunsResponse> {
+  const params = new URLSearchParams();
+  params.set("run_ids", runIds.join(","));
+  if (gtVersionId) params.set("gt_version_id", gtVersionId);
+  return request<ComparisonRunsResponse>(
+    "GET",
+    `/comparison/runs?${params.toString()}`,
+  );
+}
+
+export async function compareEngines(
+  engineIds: string[],
+  pdfIds: string[],
+  gtVersionId?: string,
+): Promise<ComparisonEnginesResponse> {
+  const params = new URLSearchParams();
+  params.set("engine_ids", engineIds.join(","));
+  params.set("pdf_ids", pdfIds.join(","));
+  if (gtVersionId) params.set("gt_version_id", gtVersionId);
+  return request<ComparisonEnginesResponse>(
+    "GET",
+    `/comparison/engines?${params.toString()}`,
   );
 }

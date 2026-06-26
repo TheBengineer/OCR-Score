@@ -363,3 +363,133 @@ export interface OverlayEngineData {
   engineName: string;
   characters: OverlayChar[];
 }
+
+/* ── Report / Dashboard types ──────────────────────────────────────────── */
+
+export interface SummaryStatistics {
+  total_pdfs: number;
+  total_runs: number;
+  completed_runs: number;
+  avg_cer: number;
+  avg_wer: number;
+  best_engine: {
+    id: string;
+    avg_cer: number;
+  } | null;
+  pages_evaluated: number;
+}
+
+export interface EngineRanking {
+  engine: string;
+  display_name: string;
+  avg_cer: number;
+  avg_wer: number;
+  avg_f1: number;
+  runs: number;
+}
+
+export interface ReportRunScores {
+  overall_score: number;
+  breakdown: Record<string, unknown> | null;
+}
+
+export interface ReportRunEntry {
+  run_id: string;
+  engine: string;
+  pdf: string;
+  status: string;
+  pages: Array<{ page: number }>;
+  page_count: number;
+  scores: ReportRunScores | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface ReportData {
+  generated_at: string;
+  runs: ReportRunEntry[];
+  engine_summaries: EngineRanking[];
+}
+
+/* ── Batch Processing ──────────────────────────────────────────────────── */
+
+export interface BatchCreateRequest {
+  pdf_ids: string[];
+  engine_slugs: string[];
+  config?: Record<string, unknown> | null;
+}
+
+export interface BatchCreateResponse {
+  id: string;
+  status: string;
+  total_items: number;
+  message: string | null;
+}
+
+export interface BatchResponse {
+  id: string;
+  pdf_ids: string[];
+  engine_slugs: string[];
+  config: Record<string, unknown> | null;
+  status: string;
+  created_at: string;
+  total_items: number;
+  completed: number;
+  failed: number;
+  error_message: string | null;
+}
+
+export interface BatchItemProgress {
+  pdf_id: string;
+  engine_slug: string;
+  run_id: string | null;
+  status: string;
+  message: string | null;
+}
+
+export interface BatchProgressResponse {
+  batch_id: string;
+  status: string;
+  total: number;
+  completed: number;
+  failed: number;
+  pending: number;
+  percent: number;
+  items: BatchItemProgress[];
+}
+
+/* ── Comparison ─────────────────────────────────────────────────────────── */
+
+export interface ComparisonRunEntry {
+  run_id: string;
+  pdf_id: string;
+  engine_slug: string;
+  status: string;
+  scores: RunOverallScores & { bootstrap_ci?: BootstrapCI | null; pages?: number } | null;
+  message?: string;
+}
+
+export interface ComparisonRunsResponse {
+  run_ids: string[];
+  gt_version_id: string | null;
+  entries: ComparisonRunEntry[];
+}
+
+export interface EnginePdfEntry {
+  pdf_id: string;
+  run_id: string | null;
+  scores: RunOverallScores | null;
+  message?: string;
+}
+
+export interface EngineComparisonEntry {
+  engine_id: string;
+  pdfs: EnginePdfEntry[];
+}
+
+export interface ComparisonEnginesResponse {
+  engine_ids: string[];
+  pdf_ids: string[];
+  gt_version_id: string | null;
+  engines: EngineComparisonEntry[];
+}
