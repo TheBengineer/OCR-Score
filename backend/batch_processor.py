@@ -14,6 +14,8 @@ for granular per-PDF progress without real-time WebSocket updates.
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -131,18 +133,19 @@ class BatchProcessor:
             msg = "engine_slugs must not be empty"
             raise BatchProcessorError(msg)
 
-        # Validate all PDFs exist
-        for pdf_id in pdf_ids:
-            result = await self._db.execute(
-                select(PDF).where(
-                    PDF.id == pdf_id,
-                    PDF.deleted_at.is_(None),
-                ),
-            )
-            pdf = result.scalars().one_or_none()
-            if pdf is None:
-                msg = f"PDF {pdf_id} not found or has been deleted"
-                raise BatchProcessorError(msg)
+        # Validate all PDFs exist in a single query
+        result = await self._db.execute(
+            select(PDF).where(
+                PDF.id.in_(pdf_ids),
+                PDF.deleted_at.is_(None),
+            ),
+        )
+        found_pdfs: list[PDF] = list(result.scalars().all())
+        found: set[uuid.UUID] = {p.id for p in found_pdfs}
+        missing = [str(pid) for pid in pdf_ids if pid not in found]
+        if missing:
+            msg = f"PDF(s) not found or have been deleted: {', '.join(missing)}"
+            raise BatchProcessorError(msg)
 
         # Validate all engines exist (in-memory registry)
         from backend.engine.registry import registry as engine_registry
@@ -232,9 +235,12 @@ class BatchProcessor:
         """
         completed = 0
         failed = 0
+        total = len(batch.items)
+        t_start = time.monotonic()
 
-        for item in batch.items:
+        for idx, item in enumerate(batch.items, start=1):
             item.status = "processing"
+            t_item = time.monotonic()
             try:
                 run = await orchestrator.create_run(
                     pdf_id=item.pdf_id,
@@ -247,6 +253,7 @@ class BatchProcessor:
                     item.status = BatchStatus.COMPLETED
                     completed += 1
                 else:
+                    # Verbose: run-level details are logged inside execute_run
                     await orchestrator.execute_run(run.id)
                     result = await db.execute(
                         select(OCRRun).where(OCRRun.id == run.id),
@@ -263,11 +270,30 @@ class BatchProcessor:
                         item.status = BatchStatus.COMPLETED
                         completed += 1
 
+                elapsed = time.monotonic() - t_item
+                slug = item.engine_slug
+                logging.info(
+                    "Batch %s [%d/%d] %s pdf=%s %s in %.1fs — %d done, %d failed",
+                    str(batch.id)[:8], idx, total, slug, str(item.pdf_id)[:8],
+                    "completed" if item.status == BatchStatus.COMPLETED else "failed",
+                    elapsed, completed, failed,
+                )
+
             except RunOrchestratorError as exc:
                 item.status = BatchStatus.FAILED
                 item.message = str(exc)
                 failed += 1
+                logging.warning(
+                    "Batch %s [%d/%d] %s pdf=%s failed: %s",
+                    str(batch.id)[:8], idx, total, item.engine_slug,
+                    str(item.pdf_id)[:8], exc,
+                )
 
+        t_total = time.monotonic() - t_start
+        logging.info(
+            "Batch %s finished: %d/%d done, %d failed in %.1fs",
+            str(batch.id)[:8], completed, total, failed, t_total,
+        )
         return completed, failed
 
     def get_batch(self, batch_id: uuid.UUID) -> Batch | None:

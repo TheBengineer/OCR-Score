@@ -171,6 +171,7 @@ class RunOrchestrator:
             return
 
         run_id_str = str(run.id)
+        t0 = datetime.now(UTC)
         self._add_log(run, "INFO", "Run queued")
 
         try:
@@ -178,7 +179,7 @@ class RunOrchestrator:
             await self._db.commit()
             await manager.broadcast_status_change(run_id_str, "queued", 0)
 
-            # Look up engine by ID (avoids relationship lazy-load issues)
+            # ── Resolve engine ───────────────────────────────────────────
             engine_record = await self._get_engine_by_id(run.engine_id)
             if engine_record is None:
                 msg = f"Engine record {run.engine_id} not found in database"
@@ -186,13 +187,20 @@ class RunOrchestrator:
             engine_slug = getattr(engine_record, "slug", "unknown")
             engine_plugin = self._registry.get(engine_slug)
             self._add_log(run, "INFO", f"Engine: {engine_slug} v{engine_plugin.version}")
+            self._add_log(run, "CONFIG", f"Config: {run.engine_config or {}}")
 
-            # Look up PDF by ID (avoids relationship lazy-load issues)
+            # ── Resolve PDF ──────────────────────────────────────────────
             pdf_record = await self._get_active_pdf(run.pdf_id)
             if pdf_record is None:
                 msg = f"PDF record {run.pdf_id} not found or deleted"
                 raise RuntimeError(msg)
             pdf_path = self._get_pdf_path(pdf_record.sha256_hash)
+            self._add_log(
+                run, "INFO",
+                f"PDF: {pdf_record.original_filename} "
+                f"({pdf_record.page_count}p, {pdf_record.file_size_bytes}B, "
+                f"sha256={pdf_record.sha256_hash[:16]}…)",
+            )
             if not await anyio.to_thread.run_sync(pdf_path.exists):
                 msg = f"PDF file not found on disk: {pdf_path}"
                 raise FileNotFoundError(msg)
@@ -202,7 +210,8 @@ class RunOrchestrator:
             run.engine_version = engine_plugin.version
             await self._db.commit()
             await manager.broadcast_status_change(run_id_str, "running", 0)
-            self._add_log(run, "INFO", "Processing started")
+            t1 = datetime.now(UTC)
+            self._add_log(run, "INFO", f"Processing started (setup took {(t1 - t0).total_seconds():.1f}s)")
 
             # Create a sync progress callback that bridges to the async
             # broadcast — this is called from engine.process_pdf which
@@ -222,12 +231,36 @@ class RunOrchestrator:
                 run.engine_config or {},
                 progress=_progress_callback,
             )
-            self._add_log(run, "INFO", "Engine processing complete, normalising output")
+            t2 = datetime.now(UTC)
+            process_s = (t2 - t1).total_seconds()
+            page_count = raw.get("page_count", 0)
+            self._add_log(
+                run, "INFO",
+                f"Engine processed {page_count}p in {process_s:.1f}s "
+                f"({process_s / max(page_count, 1):.1f}s/page)",
+            )
 
+            self._add_log(run, "INFO", "Normalising engine output")
             normalized = engine_plugin.normalize(raw)
+            pages = normalized.get("pages", [])
+            total_chars = 0
+            for p in pages:
+                for block in p.get("blocks", []):
+                    if block.get("type") == "text":
+                        for line in block.get("lines", []):
+                            for word in line.get("words", []):
+                                total_chars += len(word.get("text", ""))
+            self._add_log(
+                run, "INFO",
+                f"Normalised {len(pages)} pages, "
+                f"{total_chars} characters total",
+            )
 
             self._add_log(run, "INFO", "Run completed successfully")
             await self._store_results(run, raw, normalized)
+            t3 = datetime.now(UTC)
+            total_s = (t3 - t0).total_seconds()
+            self._add_log(run, "INFO", f"Total time: {total_s:.1f}s")
             await manager.broadcast_status_change(run_id_str, "completed", 100)
 
         except Exception as exc:  # noqa: BLE001
