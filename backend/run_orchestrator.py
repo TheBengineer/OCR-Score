@@ -226,8 +226,8 @@ class RunOrchestrator:
 
             normalized = engine_plugin.normalize(raw)
 
-            await self._store_results(run, raw, normalized)
             self._add_log(run, "INFO", "Run completed successfully")
+            await self._store_results(run, raw, normalized)
             await manager.broadcast_status_change(run_id_str, "completed", 100)
 
         except Exception as exc:  # noqa: BLE001
@@ -394,15 +394,17 @@ class RunOrchestrator:
 
     @staticmethod
     def _add_log(run: OCRRun, level: str, message: str) -> None:
-        """Append a structured log entry to the run's in-memory ``logs`` list.
+        """Append a structured log entry to the run's logs list.
 
-        The entry is written to the database on the next ``commit()``.
+        Reassigns the attribute (instead of mutating in-place) so that
+        SQLAlchemy's change tracker detects the modification and persists
+        it on the next ``commit()``.
         """
         entry: dict[str, str] = {
             "timestamp": datetime.now(UTC).isoformat(),
             "level": level,
             "message": message,
         }
-        if run.logs is None:
-            run.logs = []
-        run.logs.append(entry)
+        current = list(run.logs or [])
+        current.append(entry)
+        run.logs = current
