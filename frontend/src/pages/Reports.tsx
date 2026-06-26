@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   ClipboardList,
   Download,
@@ -12,7 +12,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { listRuns, getReportDownloadUrl, deleteRun, getRunLogs } from "../lib/api.ts";
+import { listRuns, getReportDownloadUrl, deleteRun, getRunLogs, listEngines } from "../lib/api.ts";
 import type { Run } from "../lib/types.ts";
 
 // ── Format definitions ────────────────────────────────────────────────────
@@ -70,11 +70,13 @@ function RunCheckRow({
   selected,
   onToggle,
   onDelete,
+  engineName,
 }: {
   run: Run;
   selected: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  engineName: string;
 }) {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<{timestamp: string; level: string; message: string}[] | null>(null);
@@ -134,7 +136,7 @@ function RunCheckRow({
         </button>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-surface-900">
-            Run {run.id.slice(0, 8)}…
+            {engineName}
           </p>
           <p className="text-xs text-surface-400">
             {new Date(run.created_at).toLocaleDateString("en-US", {
@@ -206,6 +208,7 @@ function RunCheckRow({
 export default function Reports() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [engineMap, setEngineMap] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -216,8 +219,14 @@ export default function Reports() {
 
     async function load() {
       try {
-        const result = await listRuns({ limit: 100 });
-        if (!cancelled) setRuns(result.items);
+        const [result, engines] = await Promise.all([
+          listRuns({ limit: 100 }),
+          listEngines(),
+        ]);
+        if (!cancelled) {
+          setRuns(result.items);
+          setEngineMap(new Map(engines.map((e) => [e.id, e.display_name])));
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load runs");
@@ -419,6 +428,7 @@ export default function Reports() {
                 selected={selectedIds.has(run.id)}
                 onToggle={() => toggleRun(run.id)}
                 onDelete={() => handleDeleteRun(run.id)}
+                engineName={engineMap.get(run.engine_id) ?? run.engine_id.slice(0, 8)}
               />
             ))
           ) : (

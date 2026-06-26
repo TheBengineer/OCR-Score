@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   FileText,
@@ -10,7 +10,7 @@ import {
   Loader2,
   AlertCircle,
 } from "lucide-react";
-import { getEngineRankings, getReportSummary, listRuns } from "../lib/api.ts";
+import { getEngineRankings, getReportSummary, listRuns, listEngines } from "../lib/api.ts";
 import type { EngineRanking, Run, SummaryStatistics } from "../lib/types.ts";
 
 // ── Metric card ───────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ function EngineRow({ rank, engine }: { rank: number; engine: EngineRanking }) {
 
 // ── Run row ───────────────────────────────────────────────────────────────
 
-function RunRow({ run }: { run: Run }) {
+function RunRow({ run, engineName }: { run: Run; engineName: string }) {
   const navigate = useNavigate();
 
   const statusColors: Record<string, string> = {
@@ -111,7 +111,7 @@ function RunRow({ run }: { run: Run }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-surface-900">
-          {run.engine_id.slice(0, 8)}…
+          {engineName}
         </p>
         <p className="truncate text-xs text-surface-400">
           {new Date(run.created_at).toLocaleDateString("en-US", {
@@ -190,6 +190,7 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<SummaryStatistics | null>(null);
   const [engineRankings, setEngineRankings] = useState<EngineRanking[]>([]);
   const [recentRuns, setRecentRuns] = useState<Run[]>([]);
+  const [engineMap, setEngineMap] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -198,18 +199,20 @@ export default function Dashboard() {
 
     async function load() {
       try {
-        const [summ, rankings, runs] = await Promise.all([
+        const [summ, rankings, runs, engines] = await Promise.all([
           getReportSummary(),
           getEngineRankings(),
           listRuns({ limit: 10 }),
+          listEngines(),
         ]);
         if (cancelled) return;
         setSummary(summ);
         setEngineRankings(rankings);
         setRecentRuns(runs.items);
+        setEngineMap(new Map(engines.map((e) => [e.id, e.display_name])));
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load dashboard data");
+          setError(err instanceof Error ? err.message : "Failed to load data");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -217,7 +220,9 @@ export default function Dashboard() {
     }
 
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loading) {
@@ -329,7 +334,7 @@ export default function Dashboard() {
         </div>
         <div className="space-y-2">
           {recentRuns.length > 0 ? (
-            recentRuns.map((run) => <RunRow key={run.id} run={run} />)
+            recentRuns.map((run) => <RunRow key={run.id} run={run} engineName={engineMap.get(run.engine_id) ?? run.engine_id.slice(0, 8)} />)
           ) : (
             <p className="rounded-xl border border-surface-200 bg-white p-6 text-center text-sm text-surface-400">
               No runs yet. Upload a PDF and run an OCR evaluation.
