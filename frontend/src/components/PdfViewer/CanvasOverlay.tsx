@@ -105,9 +105,8 @@ export function CanvasOverlay({ engineLayers, engineData }: CanvasOverlayProps) 
 
     const [vpLeft, vpTop, vpRight, vpBottom] = vp;
 
-    const fontSize = Math.max(6, Math.round(9 * scale));
-    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-    ctx.textBaseline = "bottom";
+    /* Reference font for text measurement — per-char size computed below */
+    ctx.textBaseline = "middle";
 
     /* Render each active engine layer in z-order */
     for (const layer of engineLayers) {
@@ -146,8 +145,30 @@ export function CanvasOverlay({ engineLayers, engineData }: CanvasOverlayProps) 
         /* Stroke bounding box */
         ctx.strokeRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
 
-        /* Fill character text at bottom-left inside bbox */
-        ctx.fillText(ch.char, cx0 + 1, cy1 - 1);
+        /* Compute font size from bbox height with 10% padding */
+        const bboxW = cx1 - cx0;
+        const bboxH = cy1 - cy0;
+        const targetSize = Math.max(4, Math.round(bboxH * 0.9));
+
+        /* Clamp width: measure text at target size, shrink if too wide */
+        ctx.font = `${targetSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        const measured = ctx.measureText(ch.char);
+        const textW = measured.width;
+        const finalSize =
+          textW > bboxW
+            ? Math.max(4, Math.floor(targetSize * (bboxW / Math.max(1, textW))))
+            : targetSize;
+
+        if (finalSize !== targetSize) {
+          ctx.font = `${finalSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        }
+
+        /* Centre character horizontally & vertically inside its bbox */
+        const finalMetrics = ctx.measureText(ch.char);
+        const finalTextW = finalMetrics.width;
+        const textX = cx0 + (bboxW - finalTextW) / 2;
+        const textY = cy0 + bboxH / 2;
+        ctx.fillText(ch.char, textX, textY);
       }
 
       ctx.restore();
