@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -187,6 +187,33 @@ async def get_document(pdf_id: uuid.UUID, db: SessionDep) -> PDF:
             detail="document not found",
         )
     return pdf
+
+
+@documents_router.get("/{pdf_id}/file")
+async def get_document_file(
+    pdf_id: uuid.UUID,
+    db: SessionDep,
+    storage: StorageDep,
+) -> Response:
+    """Download the raw PDF file for a document.
+
+    Looks up the document by UUID, retrieves the file from content-addressable
+    storage, and returns it with the correct ``application/pdf`` content type.
+    """
+    pdf = await _pdf_by_id(db, pdf_id)
+    if pdf is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="document not found",
+        )
+    file_bytes = await storage.retrieve(pdf.sha256_hash)
+    return Response(
+        content=file_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{pdf.original_filename}"',
+        },
+    )
 
 
 @documents_router.get("")
