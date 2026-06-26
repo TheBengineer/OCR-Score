@@ -222,6 +222,18 @@ export interface GroundTruthVersion {
   deleted_at: string | null;
 }
 
+/* ── Word Overlay ─────────────────────────────────────────────────────────── */
+
+export type OverlayWordStatus = "correct" | "wrong" | "missing" | "extra";
+
+export interface OverlayWord {
+  text: string;
+  bbox: [number, number, number, number]; // [x0, y0, x1, y1] in PDF points
+  confidence: number;
+  status: OverlayWordStatus;
+  engineText?: string;
+}
+
 /* ── PDF Viewer ─────────────────────────────────────────────────────────── */
 
 export interface PdfViewerConfig {

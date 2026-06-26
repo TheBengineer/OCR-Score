@@ -1,7 +1,38 @@
-import { useState, useCallback, useRef, useEffect, type ReactNode } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  createContext,
+  useContext,
+  type ReactNode,
+} from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { ViewerControls } from "./ViewerControls";
 import { OverlayLayer } from "./OverlayLayer";
+
+/* ── PdfViewerContext ──────────────────────────────────────────────────────
+ * Lets overlay components access the current render state (scale,
+ * dimensions, rotation) without drilling props through intermediate
+ * consumers. */
+
+export interface PdfViewerRenderState {
+  pageWidthPts: number;
+  pageHeightPts: number;
+  scale: number;
+  rotation: number;
+}
+
+export const PdfViewerContext = createContext<PdfViewerRenderState>({
+  pageWidthPts: 0,
+  pageHeightPts: 0,
+  scale: 1,
+  rotation: 0,
+});
+
+export function usePdfViewerState(): PdfViewerRenderState {
+  return useContext(PdfViewerContext);
+}
 
 /* ── PDF.js worker setup ───────────────────────────────────────────────────
  * Must be set in the same module where <Document> / <Page> are used.
@@ -244,14 +275,23 @@ export function PdfViewer({
                   />
 
                   {renderedWidth > 0 && renderedHeight > 0 && (
-                    <OverlayLayer
-                      pageWidth={pageWidthPts}
-                      pageHeight={pageHeightPts}
-                      scale={pageScale}
-                      rotation={rotation}
+                    <PdfViewerContext.Provider
+                      value={{
+                        pageWidthPts,
+                        pageHeightPts,
+                        scale: pageScale,
+                        rotation,
+                      }}
                     >
-                      {children}
-                    </OverlayLayer>
+                      <OverlayLayer
+                        pageWidth={pageWidthPts}
+                        pageHeight={pageHeightPts}
+                        scale={pageScale}
+                        rotation={rotation}
+                      >
+                        {children}
+                      </OverlayLayer>
+                    </PdfViewerContext.Provider>
                   )}
                 </div>
               )}

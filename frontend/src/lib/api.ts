@@ -8,6 +8,7 @@ import type {
   RunListResponse,
   PageResult,
   PageResultListResponse,
+  GTPageResult,
 } from "./types.ts";
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -175,4 +176,16 @@ export async function getRunRawOutput(runId: string): Promise<unknown> {
 
 export async function cancelRun(runId: string): Promise<void> {
   return request<void>("DELETE", `/runs/${runId}`);
+}
+
+// ── Ground Truth endpoints ─────────────────────────────────────────────────
+
+export async function getGTPageResult(
+  gtVersionId: string,
+  pageNumber: number,
+): Promise<GTPageResult> {
+  return request<GTPageResult>(
+    "GET",
+    `/ground-truth/${gtVersionId}/pages/${pageNumber}`,
+  );
 }

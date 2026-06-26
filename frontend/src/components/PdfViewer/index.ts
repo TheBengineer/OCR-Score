@@ -1,6 +1,10 @@
-export { PdfViewer } from "./PdfViewer";
-export type { PdfViewerProps } from "./PdfViewer";
+export { PdfViewer, PdfViewerContext, usePdfViewerState } from "./PdfViewer";
+export type { PdfViewerProps, PdfViewerRenderState } from "./PdfViewer";
 export { ViewerControls } from "./ViewerControls";
 export type { ViewerControlsProps } from "./ViewerControls";
 export { OverlayLayer } from "./OverlayLayer";
 export type { OverlayLayerProps } from "./OverlayLayer";
+export { WordOverlay } from "./WordOverlay";
+export type { WordOverlayProps } from "./WordOverlay";
+export { OverlayLegend } from "./OverlayLegend";
+export type { OverlayLegendProps } from "./OverlayLegend";
