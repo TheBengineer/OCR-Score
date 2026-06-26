@@ -40,6 +40,8 @@ services:
     container_name: ocrscore-frontend
     ports:
       - "5173:5173"
+    environment:
+      - VITE_API_URL=http://backend:8000
     working_dir: /app
     volumes:
       - ./frontend:/app
