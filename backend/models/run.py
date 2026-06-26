@@ -95,6 +95,12 @@ class OCRRun(Base):
         default=None,
         comment="Runtime environment metadata (OS, package versions, etc.)",
     )
+    logs: Mapped[list[dict] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Structured log entries: [{timestamp, level, message}, ...]",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

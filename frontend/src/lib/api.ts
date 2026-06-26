@@ -213,6 +213,10 @@ export async function deleteRun(runId: string): Promise<void> {
   return request<void>("DELETE", `/runs/${runId}`);
 }
 
+export async function getRunLogs(runId: string): Promise<{timestamp: string; level: string; message: string}[]> {
+  return request("GET", `/runs/${runId}/logs`);
+}
+
 // ── Ground Truth endpoints ─────────────────────────────────────────────────
 
 export async function getGTPageResult(

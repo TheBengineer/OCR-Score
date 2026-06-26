@@ -171,6 +171,7 @@ class RunOrchestrator:
             return
 
         run_id_str = str(run.id)
+        self._add_log(run, "INFO", "Run queued")
 
         try:
             run.status = RunStatus.QUEUED
@@ -184,6 +185,7 @@ class RunOrchestrator:
                 raise RuntimeError(msg)
             engine_slug = getattr(engine_record, "slug", "unknown")
             engine_plugin = self._registry.get(engine_slug)
+            self._add_log(run, "INFO", f"Engine: {engine_slug} v{engine_plugin.version}")
 
             # Look up PDF by ID (avoids relationship lazy-load issues)
             pdf_record = await self._get_active_pdf(run.pdf_id)
@@ -200,6 +202,7 @@ class RunOrchestrator:
             run.engine_version = engine_plugin.version
             await self._db.commit()
             await manager.broadcast_status_change(run_id_str, "running", 0)
+            self._add_log(run, "INFO", "Processing started")
 
             # Create a sync progress callback that bridges to the async
             # broadcast — this is called from engine.process_pdf which
@@ -219,15 +222,19 @@ class RunOrchestrator:
                 run.engine_config or {},
                 progress=_progress_callback,
             )
+            self._add_log(run, "INFO", "Engine processing complete, normalising output")
+
             normalized = engine_plugin.normalize(raw)
 
             await self._store_results(run, raw, normalized)
+            self._add_log(run, "INFO", "Run completed successfully")
             await manager.broadcast_status_change(run_id_str, "completed", 100)
 
         except Exception as exc:  # noqa: BLE001
             run.status = RunStatus.FAILED
             run.error_message = str(exc)
             run.completed_at = datetime.now(UTC)
+            self._add_log(run, "ERROR", str(exc))
             await self._db.commit()
             await manager.broadcast_error(run_id_str, str(exc))
 
@@ -384,3 +391,18 @@ class RunOrchestrator:
             ),
         )
         return result.scalars().one_or_none()
+
+    @staticmethod
+    def _add_log(run: OCRRun, level: str, message: str) -> None:
+        """Append a structured log entry to the run's in-memory ``logs`` list.
+
+        The entry is written to the database on the next ``commit()``.
+        """
+        entry: dict[str, str] = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": level,
+            "message": message,
+        }
+        if run.logs is None:
+            run.logs = []
+        run.logs.append(entry)

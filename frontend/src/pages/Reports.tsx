@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  ClipboardList,
   Download,
   FileSpreadsheet,
   FileJson,
@@ -11,7 +12,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { listRuns, getReportDownloadUrl, deleteRun } from "../lib/api.ts";
+import { listRuns, getReportDownloadUrl, deleteRun, getRunLogs } from "../lib/api.ts";
 import type { Run } from "../lib/types.ts";
 
 // ── Format definitions ────────────────────────────────────────────────────
@@ -75,6 +76,30 @@ function RunCheckRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logs, setLogs] = useState<{timestamp: string; level: string; message: string}[] | null>(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  async function toggleLogs(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (logsOpen) {
+      setLogsOpen(false);
+      return;
+    }
+    if (logs === null) {
+      setLogsLoading(true);
+      try {
+        const data = await getRunLogs(run.id);
+        setLogs(data);
+      } catch {
+        setLogs([]);
+      } finally {
+        setLogsLoading(false);
+      }
+    }
+    setLogsOpen(true);
+  }
+
   const statusColors: Record<string, string> = {
     completed: "text-emerald-600",
     failed: "text-red-600",
@@ -86,53 +111,92 @@ function RunCheckRow({
   const color = statusColors[run.status] ?? "text-surface-500";
 
   return (
-    <div
-      className={`flex cursor-pointer items-center gap-3 rounded-lg border bg-white px-4 py-3 transition-colors hover:bg-surface-50 ${
-        selected ? "border-primary-300 ring-1 ring-primary-200" : "border-surface-200"
-      }`}
-      onClick={onToggle}
-    >
-      <button
-        type="button"
-        className="shrink-0 text-surface-400 hover:text-primary-600"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle();
-        }}
+    <div>
+      <div
+        className={`flex cursor-pointer items-center gap-3 rounded-lg border bg-white px-4 py-3 transition-colors hover:bg-surface-50 ${
+          selected ? "border-primary-300 ring-1 ring-primary-200" : "border-surface-200"
+        }`}
+        onClick={onToggle}
       >
-        {selected ? (
-          <CheckSquare className="h-5 w-5 text-primary-600" />
-        ) : (
-          <Square className="h-5 w-5" />
-        )}
-      </button>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-surface-900">
-          Run {run.id.slice(0, 8)}…
-        </p>
-        <p className="text-xs text-surface-400">
-          {new Date(run.created_at).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </p>
+        <button
+          type="button"
+          className="shrink-0 text-surface-400 hover:text-primary-600"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        >
+          {selected ? (
+            <CheckSquare className="h-5 w-5 text-primary-600" />
+          ) : (
+            <Square className="h-5 w-5" />
+          )}
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-surface-900">
+            Run {run.id.slice(0, 8)}…
+          </p>
+          <p className="text-xs text-surface-400">
+            {new Date(run.created_at).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </p>
+        </div>
+        <span className={`shrink-0 text-xs font-medium ${color}`}>
+          {run.status}
+        </span>
+        <button
+          type="button"
+          className="shrink-0 rounded p-1 text-surface-300 hover:bg-blue-50 hover:text-blue-500 transition-colors"
+          title="View run logs"
+          onClick={toggleLogs}
+        >
+          <ClipboardList className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className="shrink-0 rounded p-1 text-surface-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+          title="Delete run"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
       </div>
-      <span className={`shrink-0 text-xs font-medium ${color}`}>
-        {run.status}
-      </span>
-      <button
-        type="button"
-        className="shrink-0 rounded p-1 text-surface-300 hover:bg-red-50 hover:text-red-500 transition-colors"
-        title="Delete run"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Trash2 className="h-4 w-4" />
-      </button>
+
+      {logsOpen && (
+        <div className="ml-8 mt-1 rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs font-mono">
+          {logsLoading ? (
+            <div className="flex items-center gap-2 text-surface-400">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading logs…
+            </div>
+          ) : logs && logs.length > 0 ? (
+            <div className="max-h-48 space-y-1 overflow-y-auto">
+              {logs.map((entry, i) => (
+                <div key={i} className="flex gap-3">
+                  <span className="shrink-0 text-surface-400">
+                    {entry.timestamp.slice(11, 19)}
+                  </span>
+                  <span className={`shrink-0 font-semibold ${
+                    entry.level === "ERROR" ? "text-red-600" : "text-blue-600"
+                  }`}>
+                    {entry.level}
+                  </span>
+                  <span className="text-surface-700">{entry.message}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="text-surface-400">No log entries.</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

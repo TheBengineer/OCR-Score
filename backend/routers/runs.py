@@ -10,6 +10,7 @@ Endpoints
 - ``GET  /api/v1/runs/{id}/raw`` — Download raw engine output.
 - ``POST /api/v1/runs/{id}/cancel`` — Cancel an in-flight run.
 - ``DELETE /api/v1/runs/{id}`` — Hard-delete a run and all associated data.
+- ``GET  /api/v1/runs/{id}/logs`` — Retrieve structured run log entries.
 """
 
 from __future__ import annotations
@@ -574,3 +575,22 @@ async def delete_run(
     await db.delete(run)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@runs_router.get("/{run_id}/logs")
+async def get_run_logs(
+    run_id: uuid.UUID,
+    db: SessionDep,
+) -> list[dict[str, str]]:
+    """Return the structured log entries for a run.
+
+    Log entries are ordered oldest-first.  Returns an empty list when
+    the run has no logs or does not exist.
+    """
+    run = await db.get(OCRRun, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="run not found",
+        )
+    return run.logs or []
