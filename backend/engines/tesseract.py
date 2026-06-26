@@ -16,6 +16,7 @@ Dependencies
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytesseract
+from PIL import Image
 from pytesseract import Output
 
 from backend.engine.base import OCREngine
@@ -43,6 +45,7 @@ from backend.engine.normalized_schema import (
     Word as NormalizedWord,
 )
 from backend.engine.registry import EngineRegistryError, registry
+from backend.engines.image_preprocessing import preprocess_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,25 @@ except ImportError:
     HAS_PDF2IMAGE = False
     _pdf2image_convert = None  # type: ignore[assignment]
 
+# ── Optional image preprocessing (Wave 2) ──────────────────────────────────
+
+
+def _preprocess_image(image: Image.Image, config: dict[str, Any]) -> Image.Image:
+    """Apply optional image preprocessing (deskew + binarization).
+
+    Args:
+        image: PIL Image to preprocess.
+        config: Engine configuration dict.
+
+    Returns:
+        Preprocessed PIL Image.
+    """
+    if image.mode == "RGBA":
+        image = image.convert("RGB")
+
+    return preprocess_pipeline(image, config)
+
+
 # ── Default configuration ───────────────────────────────────────────────────
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -63,6 +85,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "psm": 3,
     "oem": 3,
     "dpi": 300,
+    "page_timeout": 120,
+    "tesseract_config": "",
+    "preprocess": False,
 }
 
 
@@ -332,6 +357,11 @@ class TesseractEngine(OCREngine):
             - **psm** (integer, default ``3``): Page segmentation mode.
             - **oem** (integer, default ``3``): OCR engine mode.
             - **dpi** (integer, default ``300``): DPI for PDF rendering.
+            - **page_timeout** (integer, default ``120``): Max seconds per page before timeout.
+            - **tesseract_config** (string, default ``""``): Additional Tesseract CLI flags passed
+              directly.
+            - **preprocess** (boolean, default ``False``): Enable image preprocessing (deskew +
+              binarization).
         """
         return {
             "type": "object",
@@ -361,6 +391,23 @@ class TesseractEngine(OCREngine):
                     "minimum": 72,
                     "maximum": 1200,
                     "description": "DPI for PDF page rendering",
+                },
+                "page_timeout": {
+                    "type": "integer",
+                    "default": 120,
+                    "minimum": 10,
+                    "maximum": 600,
+                    "description": "Max seconds per page before timeout",
+                },
+                "tesseract_config": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Additional Tesseract CLI flags passed directly",
+                },
+                "preprocess": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Enable image preprocessing (deskew + binarization)",
                 },
             },
             "required": [],
@@ -409,13 +456,17 @@ class TesseractEngine(OCREngine):
                 "Install it with: pip install pdf2image"
             )
 
-        import asyncio
-
         dpi = int(resolved.get("dpi", 300))
         lang = str(resolved.get("lang", "eng"))
         psm = int(resolved.get("psm", 3))
         oem = int(resolved.get("oem", 3))
-        tesseract_config = f"--psm {psm} --oem {oem}"
+        page_timeout = float(resolved.get("page_timeout", 120))
+        tesseract_config = (
+            f"--psm {psm} --oem {oem} "
+            f"-c classify_enable_learning=0 "
+            f"-c user_defined_dpi={dpi} "
+            f"{resolved.get('tesseract_config', '')}"
+        ).strip()
 
         # ── Render PDF pages to images ─────────────────────────────────
         try:
@@ -433,24 +484,34 @@ class TesseractEngine(OCREngine):
 
         for page_idx, image in enumerate(images):
             img_width_px, img_height_px = image.size
+
+            # ── Optional image preprocessing (opt-in) ──────────────────
+            if resolved.get("preprocess", False):
+                image = _preprocess_image(image, resolved)
             page_width = _pixel_to_point(img_width_px, dpi)
             page_height = _pixel_to_point(img_height_px, dpi)
 
             # ── Word-level data ────────────────────────────────────────
-            word_data = await asyncio.to_thread(
-                pytesseract.image_to_data,
-                image,
-                lang=lang,
-                config=tesseract_config,
-                output_type=Output.DICT,
+            word_data = await asyncio.wait_for(
+                asyncio.to_thread(
+                    pytesseract.image_to_data,
+                    image,
+                    lang=lang,
+                    config=tesseract_config,
+                    output_type=Output.DICT,
+                ),
+                timeout=page_timeout,
             )
 
             # ── Character-level data ───────────────────────────────────
-            boxes_str = await asyncio.to_thread(
-                pytesseract.image_to_boxes,
-                image,
-                lang=lang,
-                config=tesseract_config,
+            boxes_str = await asyncio.wait_for(
+                asyncio.to_thread(
+                    pytesseract.image_to_boxes,
+                    image,
+                    lang=lang,
+                    config=tesseract_config,
+                ),
+                timeout=page_timeout,
             )
 
             raw_pages.append({
