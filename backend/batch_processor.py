@@ -138,13 +138,12 @@ class BatchProcessor:
                 msg = f"PDF {pdf_id} not found or has been deleted"
                 raise BatchProcessorError(msg)
 
-        # Validate all engines exist
+        # Validate all engines exist (in-memory registry)
+        from backend.engine.registry import registry as engine_registry
+        engine_registry.discover()
+        available = {e.engine_id for e in engine_registry.list()}
         for slug in engine_slugs:
-            result = await self._db.execute(
-                select(OCREngine).where(OCREngine.slug == slug),
-            )
-            engine = result.scalars().one_or_none()
-            if engine is None:
+            if slug not in available:
                 msg = f"Engine '{slug}' is not registered"
                 raise BatchProcessorError(msg)
 
