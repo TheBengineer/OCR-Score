@@ -9,6 +9,7 @@ from backend.routers import (
     batch_router,
     comparison_router,
     documents_router,
+    engine_router,
     gt_router,
     pages_router,
     reports_router,
@@ -40,6 +41,7 @@ app.include_router(auth_router)
 app.include_router(batch_router)
 app.include_router(comparison_router)
 app.include_router(documents_router)
+app.include_router(engine_router)
 app.include_router(runs_router)
 app.include_router(pages_router)  # /api/v1/pages/compare
 app.include_router(gt_router)
