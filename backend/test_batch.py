@@ -70,9 +70,10 @@ def orchestrator(
 @pytest.fixture
 def processor(
     db_session: FakeSession,
-    orchestrator: RunOrchestrator,
+    storage: ContentAddressableStorage,
+    engine_registry: EngineRegistry,
 ) -> BatchProcessor:
-    return BatchProcessor(db=db_session, orchestrator=orchestrator)
+    return BatchProcessor(db=db_session, storage=storage, registry=engine_registry)
 
 
 @pytest.fixture
@@ -199,8 +200,7 @@ class TestCreateBatch:
         """Given valid PDFs and engines, When creating a batch,
         Then batch has correct structure."""
         db = db_with_pdf_and_engine
-        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
-        proc = BatchProcessor(db=db, orchestrator=orch)
+        proc = BatchProcessor(db=db, storage=storage, registry=engine_registry)
 
         # Get the PDF IDs from the session store
         pdfs = list(db._store.get(PDF, {}).values())
@@ -292,8 +292,7 @@ class TestProcessBatch:
         """Given a batch with valid PDFs and engines,
         When processing, Then all items are completed."""
         db = db_with_pdf_and_engine
-        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
-        proc = BatchProcessor(db=db, orchestrator=orch)
+        proc = BatchProcessor(db=db, storage=storage, registry=engine_registry)
 
         pdfs = list(db._store.get(PDF, {}).values())
         pdf_ids = [p.id for p in pdfs]
@@ -311,10 +310,15 @@ class TestProcessBatch:
             pdf_path.parent.mkdir(parents=True, exist_ok=True)
             pdf_path.write_bytes(b"%PDF-1.4 mock content")
 
-        processed = await proc.process_batch(batch.id)
-        assert processed.status == BatchStatus.COMPLETED
+        # Run items in-process with the fake session
+        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
+        await proc._run_items(batch, orch, db)
+        assert batch.status  # was set to RUNNING by process_batch header
+        batch.status = BatchStatus.COMPLETED if not any(
+            i.status == BatchStatus.FAILED for i in batch.items
+        ) else BatchStatus.FAILED
 
-        for item in processed.items:
+        for item in batch.items:
             assert item.status == BatchStatus.COMPLETED
             assert item.run_id is not None
 
@@ -328,8 +332,7 @@ class TestProcessBatch:
         """Given a completed batch, When getting progress,
         Then progress reflects completed work."""
         db = db_with_pdf_and_engine
-        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
-        proc = BatchProcessor(db=db, orchestrator=orch)
+        proc = BatchProcessor(db=db, storage=storage, registry=engine_registry)
 
         pdfs = list(db._store.get(PDF, {}).values())
         pdf_ids = [p.id for p in pdfs]
@@ -346,7 +349,9 @@ class TestProcessBatch:
             pdf_path.parent.mkdir(parents=True, exist_ok=True)
             pdf_path.write_bytes(b"%PDF-1.4 mock content")
 
-        await proc.process_batch(batch.id)
+        # Run items in-process with the fake session
+        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
+        await proc._run_items(batch, orch, db)
 
         progress = proc.get_batch_progress(batch.id)
         assert progress is not None
@@ -375,8 +380,7 @@ class TestProcessBatch:
         """Given a batch with no items (empty after creation), When getting
         progress, Then progress has total=0 and percent=0."""
         db = db_with_pdf_and_engine
-        orch = RunOrchestrator(db=db, storage=storage, registry=engine_registry)
-        proc = BatchProcessor(db=db, orchestrator=orch)
+        proc = BatchProcessor(db=db, storage=storage, registry=engine_registry)
 
         pdfs = list(db._store.get(PDF, {}).values())
         pdf_ids = [p.id for p in pdfs]

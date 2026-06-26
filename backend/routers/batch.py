@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.batch_processor import BatchProcessor, BatchProcessorError
 from backend.database import get_db_session
-from backend.run_orchestrator import RunOrchestrator
 from backend.storage import ContentAddressableStorage
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -39,8 +38,7 @@ def get_batch_processor(
     from backend.settings import settings  # noqa: PLC0415
 
     storage = ContentAddressableStorage(Path(settings.storage_path))
-    orchestrator = RunOrchestrator(db=db, storage=storage)
-    return BatchProcessor(db=db, orchestrator=orchestrator)
+    return BatchProcessor(db=db, storage=storage)
 
 
 BatchProcessorDep = Annotated[BatchProcessor, Depends(get_batch_processor)]

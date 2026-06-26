@@ -22,12 +22,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.engine import OCREngine
+from backend.database import async_session_factory
+from backend.engine.registry import EngineRegistry
+from backend.engine.registry import registry as _global_registry
 from backend.models.enums import RunStatus
 from backend.models.pdf import PDF
 from backend.models.run import OCRRun
 from backend.run_orchestrator import RunOrchestrator, RunOrchestratorError
-from backend.database import async_session_factory
+from backend.storage import ContentAddressableStorage
 
 # ── Types ───────────────────────────────────────────────────────────────────
 
@@ -88,17 +90,20 @@ class BatchProcessor:
     """Creates and processes batches of OCR runs sequentially.
 
     Attributes:
-        db: An async SQLAlchemy session.
-        orchestrator: A ``RunOrchestrator`` instance for creating/executing runs.
+        db: An async SQLAlchemy session (for the request-scoped ``create_batch``).
+        storage: Content-addressable storage for raw outputs.
+        _registry: Engine plugin registry.
     """
 
     def __init__(
         self,
         db: AsyncSession,
-        orchestrator: RunOrchestrator,
+        storage: ContentAddressableStorage,
+        registry: EngineRegistry | None = None,
     ) -> None:
         self._db = db
-        self._orchestrator = orchestrator
+        self._storage = storage
+        self._registry = registry if registry is not None else _global_registry
 
     async def create_batch(
         self,
@@ -165,12 +170,20 @@ class BatchProcessor:
         _batches[batch.id] = batch
         return batch
 
-    async def process_batch(self, batch_id: uuid.UUID) -> Batch:
+    async def process_batch(
+        self,
+        batch_id: uuid.UUID,
+    ) -> Batch:
         """Execute all items in a batch sequentially.
 
         Each item creates and executes an OCR run. Progress is tracked via
         the batch's items list. The method runs each item in sequence to
         avoid overloading OCR engines.
+
+        **Session isolation**: This method opens its own database session
+        instead of using the request-injected ``self._db``, because it runs
+        as a background task (``asyncio.create_task``) after the HTTP response
+        is sent — at which point FastAPI will have closed the DI session.
 
         Args:
             batch_id: UUID of the batch to process.
@@ -187,13 +200,43 @@ class BatchProcessor:
             raise BatchProcessorError(msg)
 
         batch.status = BatchStatus.RUNNING
+
+        async with async_session_factory() as batch_db:
+            orchestrator = RunOrchestrator(
+                db=batch_db,
+                storage=self._storage,
+                registry=self._registry,
+            )
+            completed, failed = await self._run_items(
+                batch, orchestrator, batch_db,
+            )
+
+        batch.status = (
+            BatchStatus.COMPLETED
+            if failed == 0 or completed > 0
+            else BatchStatus.FAILED
+        )
+        return batch
+
+    async def _run_items(
+        self,
+        batch: Batch,
+        orchestrator: RunOrchestrator,
+        db: AsyncSession,
+    ) -> tuple[int, int]:
+        """Execute every item in *batch* through *orchestrator*.
+
+        Exposed as a separate method so tests can inject a fake session
+        by calling this directly with a ``FakeSession`` instead of going
+        through ``process_batch`` (which opens its own real session).
+        """
         completed = 0
         failed = 0
 
         for item in batch.items:
             item.status = "processing"
             try:
-                run = await self._orchestrator.create_run(
+                run = await orchestrator.create_run(
                     pdf_id=item.pdf_id,
                     engine_slug=item.engine_slug,
                     config=batch.config,
@@ -204,36 +247,28 @@ class BatchProcessor:
                     item.status = BatchStatus.COMPLETED
                     completed += 1
                 else:
-                    await self._orchestrator.execute_run(run.id)
-                    # Use a fresh session to re-fetch — execute_run leaves
-                    # the shared session connection in a prepared state.
-                    async with async_session_factory() as fresh_db:
-                        result = await fresh_db.execute(
-                            select(OCRRun).where(OCRRun.id == run.id),
-                        )
-                        updated_run = result.scalars().one_or_none()
-                        if updated_run and updated_run.status == RunStatus.COMPLETED:
-                            item.status = BatchStatus.COMPLETED
-                            completed += 1
-                        elif updated_run and updated_run.status == RunStatus.FAILED:
-                            item.status = BatchStatus.FAILED
-                            item.message = updated_run.error_message
-                            failed += 1
-                        else:
-                            item.status = BatchStatus.COMPLETED
-                            completed += 1
+                    await orchestrator.execute_run(run.id)
+                    result = await db.execute(
+                        select(OCRRun).where(OCRRun.id == run.id),
+                    )
+                    updated_run = result.scalars().one_or_none()
+                    if updated_run and updated_run.status == RunStatus.COMPLETED:
+                        item.status = BatchStatus.COMPLETED
+                        completed += 1
+                    elif updated_run and updated_run.status == RunStatus.FAILED:
+                        item.status = BatchStatus.FAILED
+                        item.message = updated_run.error_message
+                        failed += 1
+                    else:
+                        item.status = BatchStatus.COMPLETED
+                        completed += 1
 
             except RunOrchestratorError as exc:
                 item.status = BatchStatus.FAILED
                 item.message = str(exc)
                 failed += 1
 
-        batch.status = (
-            BatchStatus.COMPLETED
-            if failed == 0 or completed > 0
-            else BatchStatus.FAILED
-        )
-        return batch
+        return completed, failed
 
     def get_batch(self, batch_id: uuid.UUID) -> Batch | None:
         """Retrieve a batch by ID.
