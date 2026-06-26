@@ -25,6 +25,12 @@ from backend.evaluation.scoring import (
     compute_wer,
     compute_word_metrics,
 )
+from backend.evaluation.table_scoring import (
+    compute_table_structure_metrics,
+    grits_con,
+    grits_loc,
+    grits_top,
+)
 
 __all__ = [
     "add_ci_to_scores",
@@ -36,9 +42,13 @@ __all__ = [
     "compute_confidence_weighted_consensus",
     "compute_consensus_entropy",
     "compute_precision_recall_f1",
+    "compute_table_structure_metrics",
     "compute_wer",
     "compute_word_metrics",
     "evaluate_page",
     "evaluate_run",
+    "grits_con",
+    "grits_loc",
+    "grits_top",
     "resample_statistic",
 ]

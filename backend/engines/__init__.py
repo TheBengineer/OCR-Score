@@ -14,8 +14,10 @@ Engines are registered with the global ``EngineRegistry`` at import time.
 
 from backend.engines.gcp_document_ai import GcpDocumentAiEngine
 from backend.engines.tesseract import TesseractEngine
+from backend.engines.textract import TextractEngine
 
 __all__ = [
     "GcpDocumentAiEngine",
     "TesseractEngine",
+    "TextractEngine",
 ]
