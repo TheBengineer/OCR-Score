@@ -23,7 +23,9 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
+from backend.alignment.comparator import align_multiple_engine_pages, build_comparison_grid
 from backend.database import get_db_session
 from backend.models.enums import RunStatus
 from backend.models.page_result import PageResult
@@ -265,6 +267,232 @@ async def get_page_result(
             detail="page result not found",
         )
     return PageResultRead.model_validate(pr)
+
+
+@runs_router.get("/{run_id}/results/{page_number}/compare")
+async def compare_page_across_engines(
+    run_id: uuid.UUID,
+    page_number: int,
+    db: SessionDep,
+    engine_ids: str = Query(  # noqa: B008
+        default="",
+        description="Comma-separated run UUIDs to compare against this run (e.g. "
+        "'uuid1,uuid2,uuid3')",
+    ),
+) -> dict:
+    """Compare a single page's OCR results across multiple engine runs.
+
+    Returns an aligned character grid with consensus information for all
+    specified runs, enabling the frontend to composite overlay layers
+    without N+1 API calls.
+
+    The ``run_id`` in the path is the **primary** run; ``engine_ids``
+    are additional **run** UUIDs (not engine slugs).  The response
+    includes per-aligned-word consensus, per-engine status, and overall
+    statistics.
+
+    Requires at least 2 runs (primary + at least 1 extra).  All runs
+    must have status ``completed``.  Returns ``404`` if the run or page
+    is not found, or ``400`` if fewer than 2 engine IDs are provided.
+    """
+    # ── Parse engine_ids ──────────────────────────────────────────────
+    if not engine_ids or not engine_ids.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least 2 runs are required for comparison; "
+            "provide engine_ids query parameter with additional run UUIDs",
+        )
+
+    extra_run_ids: list[uuid.UUID] = []
+    for raw in engine_ids.split(","):
+        piece = raw.strip()
+        if not piece:
+            continue
+        try:
+            extra_run_ids.append(uuid.UUID(piece))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid run UUID: '{piece}'",
+            ) from None
+
+    all_run_ids = list(set([run_id] + extra_run_ids))
+    n_runs = len(all_run_ids)
+    if n_runs < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At least 2 runs are required for comparison; got {n_runs}",
+        )
+
+    # ── Fetch runs with engine info ───────────────────────────────────
+    result = await db.execute(
+        select(OCRRun)
+        .options(joinedload(OCRRun.engine))
+        .where(OCRRun.id.in_(all_run_ids)),
+    )
+    runs = list(result.scalars().unique().all())
+
+    if len(runs) != n_runs:
+        found = {r.id for r in runs}
+        missing = [str(rid) for rid in all_run_ids if rid not in found]
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Runs not found: {', '.join(missing)}",
+        )
+
+    # ── Verify all runs are completed ─────────────────────────────────
+    for run in runs:
+        if run.status != RunStatus.COMPLETED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Run {run.id} has status '{run.status.value}', expected 'completed'",
+            )
+
+    # ── Fetch page results ─────────────────────────────────────────────
+    pr_result = await db.execute(
+        select(PageResult).where(
+            PageResult.run_id.in_(all_run_ids),
+            PageResult.page_number == page_number,
+        ),
+    )
+    page_results = list(pr_result.scalars().unique().all())
+    pr_map: dict[uuid.UUID, PageResult] = {pr.run_id: pr for pr in page_results}
+
+    for rid in all_run_ids:
+        if rid not in pr_map:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Page {page_number} not found for run {rid}",
+            )
+
+    # ── Build engine results for alignment ────────────────────────────
+    first_pr = pr_map[all_run_ids[0]]
+    dimensions = {"width": first_pr.width or 0.0, "height": first_pr.height or 0.0}
+
+    engine_results: list[dict] = []
+    for run in runs:
+        engine_slug = run.engine.slug if run.engine else str(run.engine_id)
+        engine_results.append({
+            "engine": engine_slug,
+            "data": pr_map[run.id].data,
+        })
+
+    aligned = align_multiple_engine_pages(engine_results)
+    return build_comparison_grid(aligned, page_number=page_number, dimensions=dimensions)
+
+
+# ── Alternative compare across runs (PDF-scoped) ──────────────────────────────
+
+
+# ── Pages Router (cross-run comparison) ───────────────────────────────────────
+
+pages_router = APIRouter(prefix="/api/v1/pages", tags=["pages"])
+
+
+@pages_router.get("/compare")
+async def compare_pages_across_runs(
+    pdf_id: uuid.UUID,
+    db: SessionDep,
+    page: int = Query(default=1, ge=1),  # noqa: B008
+    engine_ids: str = Query(  # noqa: B008
+        ...,
+        description="Comma-separated run UUIDs to compare (e.g. 'uuid1,uuid2,uuid3')",
+    ),
+) -> dict:
+    """Compare OCR results for a page across multiple runs by PDF.
+
+    Unlike the run-scoped compare endpoint (:meth:`compare_page_across_engines`),
+    this accepts an explicit list of **run** UUIDs and a PDF ID for
+    verification.  All specified runs must belong to the same PDF.
+
+    Requires at least 2 runs.  Returns ``404`` if any run or the requested
+    page is not found.  Returns ``400`` if fewer than 2 runs are specified,
+    if a run does not belong to the PDF, or if a run is not completed.
+    """
+    # ── Parse engine_ids ──────────────────────────────────────────────
+    run_ids: list[uuid.UUID] = []
+    for raw in engine_ids.split(","):
+        piece = raw.strip()
+        if not piece:
+            continue
+        try:
+            run_ids.append(uuid.UUID(piece))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid run UUID: '{piece}'",
+            ) from None
+
+    n_runs = len(run_ids)
+    if n_runs < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At least 2 runs are required for comparison; got {n_runs}",
+        )
+
+    # ── Fetch runs with engine info ───────────────────────────────────
+    result = await db.execute(
+        select(OCRRun)
+        .options(joinedload(OCRRun.engine))
+        .where(OCRRun.id.in_(run_ids)),
+    )
+    runs = list(result.scalars().unique().all())
+
+    if len(runs) != n_runs:
+        found = {r.id for r in runs}
+        missing = [str(rid) for rid in run_ids if rid not in found]
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Runs not found: {', '.join(missing)}",
+        )
+
+    # ── Verify all runs belong to the same PDF ────────────────────────
+    for run in runs:
+        if run.pdf_id != pdf_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Run {run.id} does not belong to PDF {pdf_id}",
+            )
+
+    # ── Verify all runs are completed ─────────────────────────────────
+    for run in runs:
+        if run.status != RunStatus.COMPLETED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Run {run.id} has status '{run.status.value}', expected 'completed'",
+            )
+
+    # ── Fetch page results ─────────────────────────────────────────────
+    pr_result = await db.execute(
+        select(PageResult).where(
+            PageResult.run_id.in_(run_ids),
+            PageResult.page_number == page,
+        ),
+    )
+    page_results = list(pr_result.scalars().unique().all())
+    pr_map: dict[uuid.UUID, PageResult] = {pr.run_id: pr for pr in page_results}
+
+    for rid in run_ids:
+        if rid not in pr_map:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Page {page} not found for run {rid}",
+            )
+
+    # ── Build engine results for alignment ────────────────────────────
+    first_pr = pr_map[run_ids[0]]
+    dimensions = {"width": first_pr.width or 0.0, "height": first_pr.height or 0.0}
+
+    engine_results: list[dict] = []
+    for run in runs:
+        engine_slug = run.engine.slug if run.engine else str(run.engine_id)
+        engine_results.append({
+            "engine": engine_slug,
+            "data": pr_map[run.id].data,
+        })
+
+    aligned = align_multiple_engine_pages(engine_results)
+    return build_comparison_grid(aligned, page_number=page, dimensions=dimensions)
 
 
 @runs_router.get("/{run_id}/raw")

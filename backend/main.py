@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend.database import engine
-from backend.routers import documents_router, gt_router, runs_router, ws_router
+from backend.routers import documents_router, gt_router, pages_router, runs_router, ws_router
 from backend.settings import settings
 
 
@@ -28,6 +28,7 @@ app = FastAPI(
 
 app.include_router(documents_router)
 app.include_router(runs_router)
+app.include_router(pages_router)  # /api/v1/pages/compare
 app.include_router(gt_router)
 app.include_router(ws_router)
 

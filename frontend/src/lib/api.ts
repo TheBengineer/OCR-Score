@@ -2,13 +2,16 @@ import type {
   Document,
   DocumentListResponse,
   Engine,
+  EngineComparisonResponse,
+  GTPageResult,
+  PageResult,
+  PageResultListResponse,
   Run,
   RunCreateRequest,
   RunCreateResponse,
   RunListResponse,
-  PageResult,
-  PageResultListResponse,
-  GTPageResult,
+  RunScoresByPageResponse,
+  RunScoresResponse,
   WordComparison,
 } from "./types.ts";
 
@@ -188,6 +191,39 @@ export async function getGTPageResult(
   return request<GTPageResult>(
     "GET",
     `/ground-truth/${gtVersionId}/pages/${pageNumber}`,
+  );
+}
+
+// ── Score endpoints ────────────────────────────────────────────────────────
+
+export async function getRunScores(
+  runId: string,
+  gtVersionId: string,
+): Promise<RunScoresResponse> {
+  return request<RunScoresResponse>(
+    "GET",
+    `/runs/${runId}/scores?gt_version_id=${gtVersionId}`,
+  );
+}
+
+export async function getRunScoresByPage(
+  runId: string,
+  gtVersionId: string,
+): Promise<RunScoresByPageResponse> {
+  return request<RunScoresByPageResponse>(
+    "GET",
+    `/runs/${runId}/scores/by-page?gt_version_id=${gtVersionId}`,
+  );
+}
+
+export async function getEngineComparison(
+  pdfId: string,
+  engineIds: string[],
+  gtVersionId: string,
+): Promise<EngineComparisonResponse> {
+  return request<EngineComparisonResponse>(
+    "GET",
+    `/documents/${pdfId}/runs/comparison?engine_ids=${engineIds.join(",")}&gt_version_id=${gtVersionId}`,
   );
 }
 

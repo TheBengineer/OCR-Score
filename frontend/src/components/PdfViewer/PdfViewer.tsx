@@ -21,6 +21,7 @@ export interface PdfViewerRenderState {
   pageHeightPts: number;
   scale: number;
   rotation: number;
+  scrollToPagePosition?: (yPositionPts: number) => void;
 }
 
 export const PdfViewerContext = createContext<PdfViewerRenderState>({
@@ -80,6 +81,8 @@ export interface PdfViewerProps {
   onToggleReadingOrder?: () => void;
   /** Optional overlay content rendered inside OverlayLayer. */
   children?: ReactNode;
+  /** Optional diff ribbon rendered at the right edge of the page (outside overlay). */
+  ribbon?: ReactNode;
 }
 
 /* ── Component ──────────────────────────────────────────────────────────── */
@@ -91,6 +94,7 @@ export function PdfViewer({
   showReadingOrder = false,
   onToggleReadingOrder,
   children,
+  ribbon,
 }: PdfViewerProps) {
   /* ── State ── */
   const [numPages, setNumPages] = useState<number | null>(null);
@@ -152,6 +156,25 @@ export function PdfViewer({
 
   const renderedWidth = pageWidthPts * pageScale;
   const renderedHeight = pageHeightPts * pageScale;
+
+  /* ── Scroll to a Y position within the page ── */
+  const scrollToPagePosition = useCallback((yPositionPts: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    /* Convert PDF points to CSS pixels using the current scale,
+     * then scroll the container so that position is visible. */
+    const targetCssPx = yPositionPts * pageScale;
+    /* Account for the page being centred — find the page element */
+    const pageEl = el.querySelector<HTMLElement>('[data-page-number]');
+    if (pageEl) {
+      const pageRect = pageEl.getBoundingClientRect();
+      const containerRect = el.getBoundingClientRect();
+      const pageTopInContainer = pageRect.top - containerRect.top + el.scrollTop;
+      el.scrollTo({ top: pageTopInContainer + targetCssPx - 48, behavior: 'smooth' });
+    } else {
+      el.scrollTo({ top: targetCssPx, behavior: 'smooth' });
+    }
+  }, [pageScale]);
 
   /* ── Page navigation ── */
   const goToPage = useCallback(
@@ -289,6 +312,7 @@ export function PdfViewer({
                         pageHeightPts,
                         scale: pageScale,
                         rotation,
+                        scrollToPagePosition,
                       }}
                     >
                       <OverlayLayer
@@ -299,6 +323,19 @@ export function PdfViewer({
                       >
                         {children}
                       </OverlayLayer>
+
+                      {/* ── Diff ribbon (outside overlay) ── */}
+                      {ribbon && (
+                        <div
+                          className="absolute right-0 top-0 z-30"
+                          style={{
+                            height: renderedHeight,
+                            width: 24,
+                          }}
+                        >
+                          {ribbon}
+                        </div>
+                      )}
                     </PdfViewerContext.Provider>
                   )}
                 </div>

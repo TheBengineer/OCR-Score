@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   PdfViewer,
@@ -6,13 +6,20 @@ import {
   OverlayLegend,
   WordInspector,
   ReadingOrderOverlay,
+  CanvasOverlay,
+  EngineLayerManager,
+  DiffRibbon,
 } from "@/components/PdfViewer";
 import type {
   OverlayWord,
   PageResult,
   EngineComparison,
+  EngineLayerConfig,
+  OverlayChar,
 } from "@/lib/types";
 import { getPageResult, getGTPageResult, getWordComparison } from "@/lib/api";
+
+/* ── Constants ───────────────────────────────────────────────────────────── */
 
 /**
  * Sample PDF for development/testing when no document ID is available.
@@ -20,6 +27,18 @@ import { getPageResult, getGTPageResult, getWordComparison } from "@/lib/api";
  */
 const DEV_SAMPLE_PDF =
   "https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf";
+
+/**
+ * Default engine layers with accessible, color-blind-friendly colours:
+ *   Tesseract — Indigo  (#4f46e5)
+ *   GCP        — Emerald (#059669)
+ *   Textract   — Amber   (#d97706)
+ */
+const DEMO_ENGINE_LAYERS: EngineLayerConfig[] = [
+  { id: "tesseract", name: "Tesseract", color: "#4f46e5", opacity: 0.5, visible: true },
+  { id: "gcp-document-ai", name: "GCP Document AI", color: "#059669", opacity: 0.5, visible: false },
+  { id: "aws-textract", name: "AWS Textract", color: "#d97706", opacity: 0.5, visible: false },
+];
 
 /* ── Demo overlay words (used when no API data is available) ────────────── */
 
@@ -91,6 +110,41 @@ const DEMO_WORDS: OverlayWord[] = [
     order: 9,
   },
 ];
+
+/* ── Demo character generator ─────────────────────────────────────────────
+ * Splits each word's bbox evenly across its characters to produce
+ * character-level overlay data for all three demo engines. */
+
+function generateDemoChars(words: OverlayWord[]): Map<string, OverlayChar[]> {
+  const engines = [
+    { id: "tesseract", name: "Tesseract" },
+    { id: "gcp-document-ai", name: "GCP Document AI" },
+    { id: "aws-textract", name: "AWS Textract" },
+  ];
+
+  const result = new Map<string, OverlayChar[]>();
+
+  for (const engine of engines) {
+    const chars: OverlayChar[] = [];
+    for (const word of words) {
+      const [x0, y0, x1, y1] = word.bbox;
+      const len = word.text.length;
+      if (len === 0) continue;
+      const cw = (x1 - x0) / len;
+      for (let i = 0; i < len; i++) {
+        chars.push({
+          char: word.text[i] ?? " ",
+          bbox: [x0 + i * cw, y0, x0 + (i + 1) * cw, y1],
+          confidence: word.confidence,
+          engineId: engine.id,
+        });
+      }
+    }
+    result.set(engine.id, chars);
+  }
+
+  return result;
+}
 
 /* ── Word comparison helper ──────────────────────────────────────────────── */
 
@@ -204,6 +258,32 @@ export default function PdfViewerPage() {
   const [showReadingOrder, setShowReadingOrder] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  /* ── Canvas overlay state ── */
+  const [useCanvasOverlay, setUseCanvasOverlay] = useState(true);
+  const [engineLayers, setEngineLayers] = useState<EngineLayerConfig[]>(
+    DEMO_ENGINE_LAYERS,
+  );
+  const [engineData, setEngineData] = useState<Map<string, OverlayChar[]>>(
+    () => generateDemoChars(DEMO_WORDS),
+  );
+
+  const handleUpdateLayer = useCallback(
+    (id: string, partial: Partial<EngineLayerConfig>) => {
+      setEngineLayers((prev) =>
+        prev.map((l) => (l.id === id ? { ...l, ...partial } : l)),
+      );
+    },
+    [],
+  );
+
+  const handleShowAll = useCallback(() => {
+    setEngineLayers((prev) => prev.map((l) => ({ ...l, visible: true })));
+  }, []);
+
+  const handleHideAll = useCallback(() => {
+    setEngineLayers((prev) => prev.map((l) => ({ ...l, visible: false })));
+  }, []);
+
   /* ── Word inspector state ── */
   const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(
     null,
@@ -247,9 +327,15 @@ export default function PdfViewerPage() {
 
         const words = compareWords(ocrResult.data, gtResult.data);
         setOverlayWords(words);
+
+        // Also generate character-level data for canvas overlay
+        setEngineData(generateDemoChars(words));
       } catch (err) {
         console.warn("Failed to fetch OCR/GT data, using demo overlay", err);
-        if (!cancelled) setOverlayWords(DEMO_WORDS);
+        if (!cancelled) {
+          setOverlayWords(DEMO_WORDS);
+          setEngineData(generateDemoChars(DEMO_WORDS));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -305,12 +391,42 @@ export default function PdfViewerPage() {
     setComparisonsLoading(false);
   }, []);
 
+  /* ── Memoised engine data Map (avoids recreating on every render) ── */
+  const engineDataMemo = useMemo(() => engineData, [engineData]);
+
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="text-3xl font-bold text-surface-900">PDF Viewer</h1>
-      <p className="mt-2 text-surface-500">
-        View OCR results overlaid on the original document.
-      </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-surface-900">PDF Viewer</h1>
+          <p className="mt-2 text-surface-500">
+            View OCR results overlaid on the original document.
+          </p>
+        </div>
+
+        {/* ── Canvas / SVG mode toggle ── */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-surface-400">
+            {useCanvasOverlay ? "Canvas" : "SVG"} mode
+          </span>
+          <button
+            type="button"
+            onClick={() => setUseCanvasOverlay((v) => !v)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+              useCanvasOverlay ? "bg-primary-500" : "bg-surface-300"
+            }`}
+            role="switch"
+            aria-checked={useCanvasOverlay}
+            aria-label="Toggle canvas overlay mode"
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                useCanvasOverlay ? "translate-x-[18px]" : "translate-x-[2px]"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
 
       <div className="relative mt-6">
         <PdfViewer
@@ -318,8 +434,20 @@ export default function PdfViewerPage() {
           onPageChange={handlePageChange}
           showReadingOrder={showReadingOrder}
           onToggleReadingOrder={() => setShowReadingOrder((v) => !v)}
+          ribbon={!loading && overlayWords.length > 0 ? (
+            <DiffRibbon words={overlayWords} />
+          ) : undefined}
         >
-          {overlayVisible && !loading && (
+          {/* Canvas overlay mode — high-performance multi-engine rendering */}
+          {overlayVisible && !loading && useCanvasOverlay && (
+            <CanvasOverlay
+              engineLayers={engineLayers}
+              engineData={engineDataMemo}
+            />
+          )}
+
+          {/* SVG fallback mode — simple word-level overlay */}
+          {overlayVisible && !loading && !useCanvasOverlay && (
             <WordOverlay
               words={overlayWords}
               opacity={opacity}
@@ -329,17 +457,31 @@ export default function PdfViewerPage() {
                 : {})}
             />
           )}
+
           {showReadingOrder && !loading && (
             <ReadingOrderOverlay words={overlayWords} />
           )}
         </PdfViewer>
 
-        <OverlayLegend
-          opacity={opacity}
-          onOpacityChange={setOpacity}
-          visible={overlayVisible}
-          onVisibilityChange={setOverlayVisible}
-        />
+        {/* Layer management panel (canvas mode only) */}
+        {useCanvasOverlay && (
+          <EngineLayerManager
+            layers={engineLayers}
+            onUpdateLayer={handleUpdateLayer}
+            onShowAll={handleShowAll}
+            onHideAll={handleHideAll}
+          />
+        )}
+
+        {/* SVG legend (SVG mode only) */}
+        {!useCanvasOverlay && (
+          <OverlayLegend
+            opacity={opacity}
+            onOpacityChange={setOpacity}
+            visible={overlayVisible}
+            onVisibilityChange={setOverlayVisible}
+          />
+        )}
 
         {selectedWordIndex !== null && overlayWords[selectedWordIndex] && (
           <WordInspector

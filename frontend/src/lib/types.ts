@@ -271,3 +271,95 @@ export interface GTPageResult {
   data: PageResultData;
   confidence: number | null;
 }
+
+/* ── Score API types ────────────────────────────────────────────────────── */
+
+export interface RunOverallScores {
+  cer: number;
+  wer: number;
+  char_f1: number;
+  word_f1: number;
+}
+
+export interface BootstrapCI {
+  cer_lower: number;
+  cer_upper: number;
+  ci_level: number;
+}
+
+export interface RunScoresResponse {
+  run_id: string;
+  gt_version_id: string;
+  overall: RunOverallScores | null;
+  bootstrap_ci: BootstrapCI | null;
+  pages: number;
+  evaluated_pages: number;
+}
+
+export interface PageScoreEntry {
+  page: number;
+  cer: number;
+  wer: number;
+  char_f1: number;
+  word_f1: number;
+}
+
+export interface RunScoresByPageResponse {
+  run_id: string;
+  gt_version_id: string;
+  pages: PageScoreEntry[];
+}
+
+export interface EngineScoreEntry {
+  engine_id: string;
+  run_id: string | null;
+  scores: {
+    cer: number;
+    wer: number;
+    char_f1: number;
+    word_f1: number;
+    pages: number;
+  } | null;
+  message?: string;
+}
+
+export interface EngineComparisonResponse {
+  pdf_id: string;
+  gt_version_id: string;
+  engines: EngineScoreEntry[];
+}
+
+/* ── Canvas Overlay (character-level multi-engine) ─────────────────────────── */
+
+/** A single character from an OCR engine with its bounding box. */
+export interface OverlayChar {
+  /** The character text (may be a single char, space, or punctuation). */
+  char: string;
+  /** Bounding box in PDF points: [x0, y0, x1, y1]. */
+  bbox: [number, number, number, number];
+  /** OCR confidence score (0–1). */
+  confidence: number;
+  /** Which engine produced this character. */
+  engineId: string;
+}
+
+/** Per-engine layer configuration for the canvas overlay system. */
+export interface EngineLayerConfig {
+  /** Unique engine identifier (slug). */
+  id: string;
+  /** Human-readable engine name. */
+  name: string;
+  /** Display colour (CSS hex e.g. "#4f46e5"). */
+  color: string;
+  /** Layer opacity (0–1). */
+  opacity: number;
+  /** Whether this layer is currently visible. */
+  visible: boolean;
+}
+
+/** Characters grouped by engine, as returned from the multi-engine compare endpoint. */
+export interface OverlayEngineData {
+  engineId: string;
+  engineName: string;
+  characters: OverlayChar[];
+}

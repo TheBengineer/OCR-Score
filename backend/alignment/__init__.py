@@ -7,6 +7,9 @@ for comparing OCR outputs against ground truth.
 The spatial clustering sub-module groups word bounding boxes into logical
 text blocks (paragraphs, columns, headings) based on spatial proximity,
 and orders them in reading order for downstream sequence alignment.
+
+The comparator sub-module provides multi-engine alignment for comparing
+OCR outputs across engines side-by-side.
 """
 
 from backend.alignment.aligner import (
@@ -20,6 +23,10 @@ from backend.alignment.clustering import (
     detect_columns,
     estimate_reading_order,
 )
+from backend.alignment.comparator import (
+    align_multiple_engine_pages,
+    build_comparison_grid,
+)
 
 __all__ = [
     "needleman_wunsch",
@@ -29,4 +36,6 @@ __all__ = [
     "cluster_words_to_blocks",
     "detect_columns",
     "estimate_reading_order",
+    "align_multiple_engine_pages",
+    "build_comparison_grid",
 ]
