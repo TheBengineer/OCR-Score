@@ -222,6 +222,23 @@ export interface GroundTruthVersion {
   deleted_at: string | null;
 }
 
+/* ── Word Comparison (multi-engine) ─────────────────────────────────────────── */
+
+export interface EngineComparison {
+  engineName: string;
+  engineSlug: string;
+  text: string;
+  confidence: number;
+  status: OverlayWordStatus;
+}
+
+export interface WordComparison {
+  wordIndex: number;
+  gtText: string;
+  gtBbox: [number, number, number, number];
+  engines: EngineComparison[];
+}
+
 /* ── Word Overlay ─────────────────────────────────────────────────────────── */
 
 export type OverlayWordStatus = "correct" | "wrong" | "missing" | "extra";
@@ -232,6 +249,8 @@ export interface OverlayWord {
   confidence: number;
   status: OverlayWordStatus;
   engineText?: string;
+  /** MST-based reading order position (1-based). 0 or undefined = no order data. */
+  order?: number;
 }
 
 /* ── PDF Viewer ─────────────────────────────────────────────────────────── */

@@ -9,6 +9,7 @@ import type {
   PageResult,
   PageResultListResponse,
   GTPageResult,
+  WordComparison,
 } from "./types.ts";
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -187,5 +188,18 @@ export async function getGTPageResult(
   return request<GTPageResult>(
     "GET",
     `/ground-truth/${gtVersionId}/pages/${pageNumber}`,
+  );
+}
+
+// ── Multi-engine word comparison ───────────────────────────────────────────
+
+export async function getWordComparison(
+  runId: string,
+  pageNumber: number,
+  wordIndex: number,
+): Promise<WordComparison> {
+  return request<WordComparison>(
+    "GET",
+    `/runs/${runId}/results/${pageNumber}/compare?word_index=${wordIndex}`,
   );
 }

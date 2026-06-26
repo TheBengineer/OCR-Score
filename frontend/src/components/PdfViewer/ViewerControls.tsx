@@ -6,6 +6,7 @@ import {
   ZoomOut,
   RotateCw,
   RotateCcw,
+  ListOrdered,
 } from "lucide-react";
 import { useState, useCallback, type KeyboardEvent, type ChangeEvent } from "react";
 
@@ -13,9 +14,11 @@ export interface ViewerControlsProps {
   pageNumber: number;
   numPages: number;
   zoomPercent: number;
+  showReadingOrder: boolean;
   onPrevPage: () => void;
   onNextPage: () => void;
   onPageChange: (page: number) => void;
+  onToggleReadingOrder: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFitToWidth: () => void;
@@ -36,9 +39,11 @@ export function ViewerControls({
   pageNumber,
   numPages,
   zoomPercent,
+  showReadingOrder,
   onPrevPage,
   onNextPage,
   onPageChange,
+  onToggleReadingOrder,
   onZoomIn,
   onZoomOut,
   onFitToWidth,
@@ -116,6 +121,21 @@ export function ViewerControls({
         >
           <ChevronRight size={18} />
         </button>
+      </div>
+
+      {/* ── Reading order toggle ── */}
+      <div className="flex items-center gap-1">
+        <div className="mx-1 h-5 w-px bg-surface-200" />
+        <button
+          type="button"
+          className={iconButtonClass(showReadingOrder)}
+          onClick={onToggleReadingOrder}
+          aria-label="Toggle reading order"
+          aria-pressed={showReadingOrder}
+        >
+          <ListOrdered size={18} />
+        </button>
+        <span className="text-xs text-surface-500">Order</span>
       </div>
 
       {/* ── Zoom controls ── */}

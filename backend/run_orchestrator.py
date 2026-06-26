@@ -6,7 +6,8 @@ The ``RunOrchestrator`` is the central coordinator for OCR processing:
    deduplication, and persists a new ``OCRRun`` record.
 2. **execute_run** — Fetches the engine plugin, runs ``process_pdf`` with
    progress tracking, normalises the output, and stores both raw and
-   normalised results.
+   normalised results.  Progress updates are broadcast to any connected
+   WebSocket subscribers via the global :data:`manager`.
 3. **cancel_run** — Gracefully transitions a cancellable run to ``cancelled``.
 
 Run hash dedup
@@ -20,6 +21,7 @@ always created.  In-progress runs (pending/queued/running) raise a conflict.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -38,6 +40,7 @@ from backend.models.page_result import PageResult
 from backend.models.pdf import PDF
 from backend.models.run import OCRRun
 from backend.storage import ContentAddressableStorage
+from backend.websocket_manager import manager
 
 _IN_FLIGHT: frozenset[RunStatus] = frozenset({
     RunStatus.PENDING,
@@ -167,9 +170,12 @@ class RunOrchestrator:
         if run is None:
             return
 
+        run_id_str = str(run.id)
+
         try:
             run.status = RunStatus.QUEUED
             await self._db.commit()
+            await manager.broadcast_status_change(run_id_str, "queued", 0)
 
             # Look up engine by ID (avoids relationship lazy-load issues)
             engine_record = await self._get_engine_by_id(run.engine_id)
@@ -193,21 +199,37 @@ class RunOrchestrator:
             run.started_at = datetime.now(UTC)
             run.engine_version = engine_plugin.version
             await self._db.commit()
+            await manager.broadcast_status_change(run_id_str, "running", 0)
+
+            # Create a sync progress callback that bridges to the async
+            # broadcast — this is called from engine.process_pdf which
+            # runs in the same event loop.
+            def _progress_callback(pct: int) -> None:
+                asyncio.create_task(
+                    manager.broadcast_progress(
+                        run_id_str,
+                        pct,
+                        "running",
+                        f"Processing... {pct}%",
+                    ),
+                )
 
             raw = await engine_plugin.process_pdf(
                 str(pdf_path),
                 run.engine_config or {},
-                progress=None,
+                progress=_progress_callback,
             )
             normalized = engine_plugin.normalize(raw)
 
             await self._store_results(run, raw, normalized)
+            await manager.broadcast_status_change(run_id_str, "completed", 100)
 
         except Exception as exc:  # noqa: BLE001
             run.status = RunStatus.FAILED
             run.error_message = str(exc)
             run.completed_at = datetime.now(UTC)
             await self._db.commit()
+            await manager.broadcast_error(run_id_str, str(exc))
 
     async def cancel_run(self, run_id: uuid.UUID) -> OCRRun | None:
         """Cancel a run if it is still in a cancellable state.

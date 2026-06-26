@@ -74,6 +74,10 @@ export interface PdfViewerProps {
   onPageChange?: (pageNumber: number) => void;
   /** Page to show on first render (default: 1). */
   initialPage?: number;
+  /** Whether reading order overlay is visible. */
+  showReadingOrder?: boolean;
+  /** Called when reading order toggle is clicked. */
+  onToggleReadingOrder?: () => void;
   /** Optional overlay content rendered inside OverlayLayer. */
   children?: ReactNode;
 }
@@ -84,6 +88,8 @@ export function PdfViewer({
   pdfUrl,
   onPageChange,
   initialPage = 1,
+  showReadingOrder = false,
+  onToggleReadingOrder,
   children,
 }: PdfViewerProps) {
   /* ── State ── */
@@ -225,9 +231,11 @@ export function PdfViewer({
         pageNumber={pageNumber}
         numPages={numPages ?? 0}
         zoomPercent={zoomPercent}
+        showReadingOrder={showReadingOrder}
         onPrevPage={goToPrevPage}
         onNextPage={goToNextPage}
         onPageChange={goToPage}
+        onToggleReadingOrder={onToggleReadingOrder ?? (() => {})}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onFitToWidth={fitToWidth}

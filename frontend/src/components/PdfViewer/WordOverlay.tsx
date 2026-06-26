@@ -71,11 +71,20 @@ export interface WordOverlayProps {
   words: OverlayWord[];
   /** Fill opacity (0–1). Default 0.3. */
   opacity?: number;
+  /** Called when a word rect is clicked. */
+  onWordClick?: (wordIndex: number, word: OverlayWord, event: React.MouseEvent) => void;
+  /** Index of the currently selected word (to highlight with thicker border). */
+  selectedIndex?: number;
 }
 
 /* ── Component ───────────────────────────────────────────────────────────── */
 
-export function WordOverlay({ words, opacity = 0.3 }: WordOverlayProps) {
+export function WordOverlay({
+  words,
+  opacity = 0.3,
+  onWordClick,
+  selectedIndex,
+}: WordOverlayProps) {
   const { scale, rotation } = usePdfViewerState();
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
@@ -93,6 +102,13 @@ export function WordOverlay({ words, opacity = 0.3 }: WordOverlayProps) {
     setTooltip(null);
   }, []);
 
+  const handleClick = useCallback(
+    (idx: number, word: OverlayWord, e: React.MouseEvent) => {
+      onWordClick?.(idx, word, e);
+    },
+    [onWordClick],
+  );
+
   if (!words.length) return null;
 
   return (
@@ -100,6 +116,7 @@ export function WordOverlay({ words, opacity = 0.3 }: WordOverlayProps) {
       {words.map((word, idx) => {
         const [x0, y0, x1, y1] = word.bbox;
         const style = STATUS_STYLES[word.status];
+        const isSelected = idx === selectedIndex;
 
         /* Swap coordinates for 90°/270° rotation */
         let cssLeft: number;
@@ -127,9 +144,10 @@ export function WordOverlay({ words, opacity = 0.3 }: WordOverlayProps) {
         return (
           <div
             key={idx}
-            role="img"
+            role="button"
             aria-label={ariaDescription}
-            className="pointer-events-auto absolute cursor-default"
+            tabIndex={0}
+            className="pointer-events-auto absolute cursor-pointer"
             style={{
               left: cssLeft,
               top: cssTop,
@@ -141,9 +159,18 @@ export function WordOverlay({ words, opacity = 0.3 }: WordOverlayProps) {
               backgroundBlendMode: style.pattern ? "normal" : undefined,
               minWidth: 4,
               minHeight: 4,
+              outline: isSelected ? `2px solid ${style.fill}` : undefined,
+              outlineOffset: isSelected ? 1 : undefined,
             }}
             onMouseEnter={(e) => handleMouseEnter(word, e)}
             onMouseLeave={handleMouseLeave}
+            onClick={(e) => handleClick(idx, word, e)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleClick(idx, word, e as unknown as React.MouseEvent);
+              }
+            }}
           />
         );
       })}
