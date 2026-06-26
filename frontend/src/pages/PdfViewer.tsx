@@ -17,7 +17,7 @@ import type {
   EngineLayerConfig,
   OverlayChar,
 } from "@/lib/types";
-import { getPageResult, getGTPageResult, getWordComparison } from "@/lib/api";
+import { getPageResult, getGTPageResult, getWordComparison, getRun, listEngines } from "@/lib/api";
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -111,39 +111,30 @@ const DEMO_WORDS: OverlayWord[] = [
   },
 ];
 
-/* ── Demo character generator ─────────────────────────────────────────────
- * Splits each word's bbox evenly across its characters to produce
- * character-level overlay data for all three demo engines. */
+/* ── Real character extractor ─────────────────────────────────────────────
+ * Extracts character-level overlay data from a real PageResult response,
+ * preserving each character's actual text, bounding box, and confidence. */
 
-function generateDemoChars(words: OverlayWord[]): Map<string, OverlayChar[]> {
-  const engines = [
-    { id: "tesseract", name: "Tesseract" },
-    { id: "gcp-document-ai", name: "GCP Document AI" },
-    { id: "aws-textract", name: "AWS Textract" },
-  ];
-
-  const result = new Map<string, OverlayChar[]>();
-
-  for (const engine of engines) {
-    const chars: OverlayChar[] = [];
-    for (const word of words) {
-      const [x0, y0, x1, y1] = word.bbox;
-      const len = word.text.length;
-      if (len === 0) continue;
-      const cw = (x1 - x0) / len;
-      for (let i = 0; i < len; i++) {
-        chars.push({
-          char: word.text[i] ?? " ",
-          bbox: [x0 + i * cw, y0, x0 + (i + 1) * cw, y1],
-          confidence: word.confidence,
-          engineId: engine.id,
-        });
+function extractCharsFromPageData(
+  pageData: PageResult["data"],
+  engineSlug: string,
+): OverlayChar[] {
+  const chars: OverlayChar[] = [];
+  for (const block of pageData.blocks) {
+    for (const line of block.lines) {
+      for (const word of line.words) {
+        for (const ch of word.chars) {
+          chars.push({
+            char: ch.char,
+            bbox: ch.bbox,
+            confidence: ch.confidence,
+            engineId: engineSlug,
+          });
+        }
       }
     }
-    result.set(engine.id, chars);
   }
-
-  return result;
+  return chars;
 }
 
 /* ── Word comparison helper ──────────────────────────────────────────────── */
@@ -264,7 +255,7 @@ export default function PdfViewerPage() {
     DEMO_ENGINE_LAYERS,
   );
   const [engineData, setEngineData] = useState<Map<string, OverlayChar[]>>(
-    () => generateDemoChars(DEMO_WORDS),
+    () => new Map(),
   );
 
   const handleUpdateLayer = useCallback(
@@ -318,7 +309,8 @@ export default function PdfViewerPage() {
 
     async function fetchData(rid: string, gtvId: string) {
       try {
-        const [ocrResult, gtResult] = await Promise.all([
+        const [runInfo, ocrResult, gtResult] = await Promise.all([
+          getRun(rid),
           getPageResult(rid, 1),
           getGTPageResult(gtvId, 1),
         ]);
@@ -328,13 +320,28 @@ export default function PdfViewerPage() {
         const words = compareWords(ocrResult.data, gtResult.data);
         setOverlayWords(words);
 
-        // Also generate character-level data for canvas overlay
-        setEngineData(generateDemoChars(words));
+        // Determine the engine slug for this run
+        let engineSlug = "unknown";
+        try {
+          const engines = await listEngines();
+          const match = engines.find((e) => e.id === runInfo.engine_id);
+          if (match) engineSlug = match.slug;
+        } catch {
+          // fall through with "unknown" slug
+        }
+
+        // Extract real character data from the OCR output
+        const realChars = extractCharsFromPageData(ocrResult.data, engineSlug);
+        const charMap = new Map<string, OverlayChar[]>();
+        if (realChars.length > 0) {
+          charMap.set(engineSlug, realChars);
+        }
+        setEngineData(charMap);
       } catch (err) {
         console.warn("Failed to fetch OCR/GT data, using demo overlay", err);
         if (!cancelled) {
           setOverlayWords(DEMO_WORDS);
-          setEngineData(generateDemoChars(DEMO_WORDS));
+          setEngineData(new Map());
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -393,6 +400,27 @@ export default function PdfViewerPage() {
 
   /* ── Memoised engine data Map (avoids recreating on every render) ── */
   const engineDataMemo = useMemo(() => engineData, [engineData]);
+
+  /* ── Sync engine layers to match available engine data ── */
+  useEffect(() => {
+    if (engineData.size === 0) return;
+    setEngineLayers((prev) => {
+      const existing = new Set(prev.map((l) => l.id));
+      const next = [...prev];
+      for (const engineId of engineData.keys()) {
+        if (!existing.has(engineId)) {
+          next.push({
+            id: engineId,
+            name: engineId,
+            color: "#4f46e5",
+            opacity: 0.5,
+            visible: true,
+          });
+        }
+      }
+      return next;
+    });
+  }, [engineData]);
 
   return (
     <div className="mx-auto max-w-6xl">
