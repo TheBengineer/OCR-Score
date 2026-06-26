@@ -65,7 +65,7 @@ export default function EngineList() {
       <div className="mt-8 grid gap-4 sm:grid-cols-2">
         {engines.map((engine) => (
           <div
-            key={engine.engine_id}
+            key={engine.slug}
             className="rounded-xl border border-surface-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
           >
             <div className="flex items-start justify-between">
@@ -74,35 +74,45 @@ export default function EngineList() {
                   {engine.display_name}
                 </h3>
                 <span className="mt-0.5 inline-block rounded-full bg-surface-100 px-2.5 py-0.5 text-xs font-medium text-surface-600">
-                  {engine.engine_id}
+                  {engine.slug}
                 </span>
               </div>
               <span className="text-xs text-surface-400">v{engine.version}</span>
             </div>
 
-            {engine.config_schema?.properties && (
+            {engine.config_schema &&
+              typeof engine.config_schema === "object" &&
+              "properties" in engine.config_schema && (
               <details className="mt-3">
                 <summary className="cursor-pointer text-xs font-medium text-surface-500 hover:text-surface-700">
-                  Configuration ({Object.keys(engine.config_schema.properties).length} params)
+                  Configuration (
+                  {Object.keys(
+                    (engine.config_schema as Record<string, unknown>).properties as Record<
+                      string,
+                      unknown
+                    >,
+                  ).length}{" "}
+                  params)
                 </summary>
                 <div className="mt-2 space-y-1.5">
-                  {Object.entries(engine.config_schema.properties).map(
-                    ([key, val]) => (
-                      <div key={key} className="flex items-center gap-2 text-xs">
-                        <code className="rounded bg-surface-50 px-1.5 py-0.5 font-mono text-surface-700">
-                          {key}
-                        </code>
-                        <span className="text-surface-400">
-                          {(val as { type?: string; default?: unknown }).type ?? "string"}
+                  {Object.entries(
+                    (engine.config_schema as Record<string, unknown>).properties as Record<
+                      string,
+                      { type?: string; default?: unknown; description?: string }
+                    >,
+                  ).map(([key, val]) => (
+                    <div key={key} className="flex items-center gap-2 text-xs">
+                      <code className="rounded bg-surface-50 px-1.5 py-0.5 font-mono text-surface-700">
+                        {key}
+                      </code>
+                      <span className="text-surface-400">{val.type ?? "string"}</span>
+                      {val.default !== undefined && (
+                        <span className="ml-auto text-surface-400">
+                          = {String(val.default)}
                         </span>
-                        {(val as { default?: unknown }).default !== undefined && (
-                          <span className="ml-auto text-surface-400">
-                            = {String((val as { default?: unknown }).default)}
-                          </span>
-                        )}
-                      </div>
-                    ),
-                  )}
+                      )}
+                    </div>
+                  ))}
                 </div>
               </details>
             )}
