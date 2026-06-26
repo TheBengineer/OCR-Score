@@ -1,7 +1,24 @@
 import { useParams } from "react-router-dom";
+import { PdfViewer } from "@/components/PdfViewer";
+import { useCallback } from "react";
 
-export default function PdfViewer() {
+/**
+ * Sample PDF for development/testing when no document ID is available.
+ * Mozilla's compressed.tracemonkey-pldi-09.pdf — a standard PDF.js test file.
+ */
+const DEV_SAMPLE_PDF =
+  "https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf";
+
+export default function PdfViewerPage() {
   const { id } = useParams<{ id: string }>();
+
+  const pdfUrl = id
+    ? `/api/v1/documents/${id}/file`
+    : DEV_SAMPLE_PDF;
+
+  const handlePageChange = useCallback((pageNumber: number) => {
+    console.info("Page changed to", pageNumber);
+  }, []);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -9,13 +26,12 @@ export default function PdfViewer() {
       <p className="mt-2 text-surface-500">
         View OCR results overlaid on the original document.
       </p>
-      <div className="mt-8 rounded-xl border border-surface-200 bg-white p-12 text-center shadow-sm">
-        <p className="text-surface-400">
-          Document <code className="rounded bg-surface-100 px-1.5 py-0.5 font-mono text-sm text-surface-600">{id ?? "—"}</code>
-        </p>
-        <p className="mt-2 text-sm text-surface-400">
-          PDF rendering and OCR overlay layers will be available here.
-        </p>
+
+      <div className="mt-6">
+        <PdfViewer
+          pdfUrl={pdfUrl}
+          onPageChange={handlePageChange}
+        />
       </div>
     </div>
   );

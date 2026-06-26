@@ -222,6 +222,15 @@ export interface GroundTruthVersion {
   deleted_at: string | null;
 }
 
+/* ── PDF Viewer ─────────────────────────────────────────────────────────── */
+
+export interface PdfViewerConfig {
+  defaultZoom?: number;
+  minZoom?: number;
+  maxZoom?: number;
+  zoomStep?: number;
+}
+
 export interface GTPageResult {
   id: string;
   gt_version_id: string;
