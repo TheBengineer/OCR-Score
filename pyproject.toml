@@ -1,0 +1,55 @@
+[project]
+name = "ocrscore"
+version = "0.1.0"
+description = "OCRScore — Document OCR and scoring platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pytesseract>=0.3.13",
+    "google-cloud-documentai>=2.36.0",
+    "boto3>=1.35.0",
+    "rapidfuzz>=3.11.0",
+    "websockets>=14.1",
+    "httpx2>=0.2.0",
+    "pydantic-settings>=2.7.0",
+    "structlog>=24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.9.0",
+    "basedpyright>=1.27.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+reportMissingTypeStubs = false
+reportUnnecessaryTypeIgnoreComment = true
+reportImplicitStringConcatenation = false
+include = ["backend"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

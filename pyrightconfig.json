@@ -1,0 +1,7 @@
+{
+    "typeCheckingMode": "all",
+    "reportMissingTypeStubs": false,
+    "reportUnnecessaryTypeIgnoreComment": true,
+    "reportImplicitStringConcatenation": false,
+    "include": ["backend"]
+}
