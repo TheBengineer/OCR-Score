@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://ocrscore:ocrscore@localhost:5432/ocrscore"
     echo_sql: bool = False
+    storage_path: str = "./store"
 
     model_config = {"env_prefix": "OCRSCORE_", "env_file": ".env", "extra": "ignore"}
 
