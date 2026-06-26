@@ -28,6 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar
 
+from backend.engine.base import SecretDef
 from backend.engine.normalized_schema import (
     NormalizedDocument,
     NormalizedPage,
@@ -104,6 +105,15 @@ class OlmocrEngine(BaseVLMEngine):
     engine_id: ClassVar[str] = "olmocr"
     display_name: ClassVar[str] = "olmOCR"
     version: ClassVar[str] = "0.1.0"
+
+    required_secrets: ClassVar[list] = [
+        SecretDef(
+            key="api_key",
+            env_var="OLMOCR_API_KEY",
+            display_name="olmOCR API Key",
+            description="API key for the olmOCR inference endpoint",
+        ),
+    ]
 
     # ── Config schema ──────────────────────────────────────────────────────
 

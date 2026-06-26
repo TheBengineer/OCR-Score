@@ -45,7 +45,7 @@ from typing import Any, ClassVar, Final
 
 import anyio
 
-from backend.engine.base import OCREngine
+from backend.engine.base import OCREngine, SecretDef
 from backend.engine.normalized_schema import (
     Character as NormalizedCharacter,
 )
@@ -392,6 +392,15 @@ class GcpDocumentAiEngine(OCREngine):
     engine_id: ClassVar[str] = "gcp-document-ai"
     display_name: ClassVar[str] = "GCP Document AI"
     version: ClassVar[str] = _DOCUMENT_AI_VERSION
+
+    required_secrets: ClassVar[list] = [
+        SecretDef(
+            key="credentials_path",
+            env_var="GOOGLE_APPLICATION_CREDENTIALS",
+            display_name="Service Account JSON Path",
+            description="Path to GCP service account key file (optional — uses ADC if empty)",
+        ),
+    ]
 
     # ── Config schema ──────────────────────────────────────────────────────
 

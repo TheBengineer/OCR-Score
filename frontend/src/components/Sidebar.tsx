@@ -4,6 +4,7 @@ import {
   FileText,
   Cpu,
   BarChart3,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 
@@ -18,6 +19,7 @@ const navItems: NavItem[] = [
   { label: "PDFs", path: "/pdfs", icon: FileText },
   { label: "Engines", path: "/engines", icon: Cpu },
   { label: "Reports", path: "/reports", icon: BarChart3 },
+  { label: "Security", path: "/security", icon: Shield },
 ];
 
 export default function Sidebar() {

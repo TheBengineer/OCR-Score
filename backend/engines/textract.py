@@ -55,7 +55,7 @@ from typing import Any, ClassVar
 
 import anyio
 
-from backend.engine.base import OCREngine
+from backend.engine.base import OCREngine, SecretDef
 from backend.engine.normalized_schema import (
     Character as NormalizedCharacter,
 )
@@ -506,6 +506,27 @@ class TextractEngine(OCREngine):
     engine_id: ClassVar[str] = "aws-textract"
     display_name: ClassVar[str] = "AWS Textract"
     version: ClassVar[str] = _TEXTRACT_VERSION
+
+    required_secrets: ClassVar[list] = [
+        SecretDef(
+            key="access_key_id",
+            env_var="AWS_ACCESS_KEY_ID",
+            display_name="AWS Access Key ID",
+            description="AWS IAM access key ID",
+        ),
+        SecretDef(
+            key="secret_access_key",
+            env_var="AWS_SECRET_ACCESS_KEY",
+            display_name="AWS Secret Access Key",
+            description="AWS IAM secret access key",
+        ),
+        SecretDef(
+            key="region",
+            env_var="AWS_REGION",
+            display_name="AWS Region",
+            description="e.g. us-east-1, eu-west-1",
+        ),
+    ]
 
     # ── Config schema ──────────────────────────────────────────────────────
 

@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.engine.registry import EngineRegistry
 from backend.engine.registry import registry as _global_registry
+from backend.engine.secret_store import SecretStore
 from backend.models.enums import RunStatus
 from backend.models.page_result import PageResult
 from backend.models.pdf import PDF
@@ -51,6 +52,13 @@ _IN_FLIGHT: frozenset[RunStatus] = frozenset({
 
 class RunOrchestratorError(Exception):
     """Raised when a run creation/execution precondition fails."""
+
+
+def _read_env(var: str | None) -> str | None:
+    """Return the value of *var* from the process environment, or ``None``."""
+    import os  # noqa: PLC0415
+
+    return os.environ.get(var) if var else None
 
 
 class RunOrchestrator:
@@ -226,9 +234,25 @@ class RunOrchestrator:
                     ),
                 )
 
+            # Merge stored secrets into the config so the engine can find
+            # them alongside normal parameters.  User-supplied config values
+            # take precedence over stored secrets.
+            resolved_config = dict(run.engine_config or {})
+            secret_store = SecretStore(self._db)
+            stored = await secret_store.list(engine_slug)
+            # Env vars take highest precedence, then user config, then stored
+            for sd in engine_plugin.get_secret_schema():
+                env_val = _read_env(sd.env_var) if sd.env_var else None
+                if env_val:
+                    resolved_config[sd.key] = env_val
+                elif sd.key in resolved_config:
+                    pass  # user-supplied
+                elif sd.key in stored:
+                    resolved_config[sd.key] = stored[sd.key]
+
             raw = await engine_plugin.process_pdf(
                 str(pdf_path),
-                run.engine_config or {},
+                resolved_config,
                 progress=_progress_callback,
             )
             t2 = datetime.now(UTC)

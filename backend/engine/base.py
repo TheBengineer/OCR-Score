@@ -13,14 +13,54 @@ Engine subclasses also set three **class-level attributes** that identify them:
 - ``engine_id``: Short machine-readable slug (e.g. ``"tesseract"``).
 - ``display_name``: Human-readable name (e.g. ``"Tesseract OCR"``).
 - ``version``: Engine plugin version (e.g. ``"0.1.0"``).
+
+Engines that need API keys or credentials declare them via the
+``required_secrets`` class attribute — a list of ``SecretDef`` entries
+that the user must configure before running that engine.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# ── Secret definition ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class SecretDef:
+    """Declares a secret (API key, credential) an engine needs to operate.
+
+    Each entry becomes a labelled input field in the Security settings page.
+    Secrets are stored in the ``EngineSecret`` table, keyed by engine + key,
+    and are injected into the engine's ``config`` dict before ``process_pdf``
+    is called (they override any user-supplied value with the same key).
+
+    Attributes:
+        key: Machine key used to store and inject the secret (e.g.
+            ``"aws_access_key_id"``).  This same key appears in the ``config``
+            dict the engine receives.
+        env_var: Optional environment variable name that also supplies this
+            value (e.g. ``"AWS_ACCESS_KEY_ID"``).  If the env var is set it
+            takes precedence, but the UI still shows the field.
+        display_name: Short human-readable label for the UI.
+        description: Longer explanation shown as placeholder / help text.
+    """
+
+    key: str
+    env_var: str | None = None
+    display_name: str = ""
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.display_name:
+            self.display_name = self.key.replace("_", " ").title()
+
+
+# ── Base engine class ──────────────────────────────────────────────────────────
 
 
 class OCREngine(ABC):
@@ -28,6 +68,7 @@ class OCREngine(ABC):
 
     Every concrete engine must define the class attributes ``engine_id``,
     ``display_name``, and ``version``, and implement all abstract methods.
+    Optionally define ``required_secrets`` to declare API keys / credentials.
 
     Typical lifecycle::
 
@@ -41,6 +82,9 @@ class OCREngine(ABC):
     engine_id: str
     display_name: str
     version: str
+
+    # ── Secrets this engine needs (override in subclasses) ─────────────────
+    required_secrets: list[SecretDef] = []
 
     # ── Abstract methods ──────────────────────────────────────────────────
 
@@ -75,7 +119,9 @@ class OCREngine(ABC):
         Args:
             pdf_path: Path to the PDF file to process.
             config: Engine-specific configuration (validated against
-                ``get_config_schema()`` upstream).
+                ``get_config_schema()`` upstream).  Any secrets declared
+                in ``required_secrets`` that have been configured by the
+                user are already merged into this dict.
             progress: Callback invoked with an ``int`` between 0 and 100
                 to report processing progress.  Engines should call this
                 at meaningful checkpoints.
@@ -107,7 +153,16 @@ class OCREngine(ABC):
 
         Returns:
             A dict conforming to ``NormalizedDocument`` with all pages,
-            blocks, lines, words, characters, and tables in the canonical
+            blocks, lines, words, and characters in the canonical
             page-space coordinate system (points at 72 DPI, top-left origin).
         """
         ...
+
+    @classmethod
+    def get_secret_schema(cls) -> list[SecretDef]:
+        """Return the list of secrets this engine requires.
+
+        The default implementation returns ``cls.required_secrets``.
+        Subclasses may override to compute the list dynamically.
+        """
+        return list(cls.required_secrets)

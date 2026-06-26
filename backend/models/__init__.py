@@ -1,6 +1,7 @@
 """OCRScore data models — re-exports for convenient importing."""
 
 from backend.models.engine import OCREngine
+from backend.models.engine_secret import EngineSecret
 from backend.models.enums import (
     GroundTruthSource,
     PDFStatus,

@@ -6,6 +6,7 @@ import PdfViewer from "./pages/PdfViewer.tsx";
 import Evaluation from "./pages/Evaluation.tsx";
 import EngineList from "./pages/EngineList.tsx";
 import Reports from "./pages/Reports.tsx";
+import Security from "./pages/Security.tsx";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/pdfs/:id/evaluation" element={<Evaluation />} />
         <Route path="/engines" element={<EngineList />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/security" element={<Security />} />
         <Route path="*" element={<Dashboard />} />
       </Routes>
     </Layout>

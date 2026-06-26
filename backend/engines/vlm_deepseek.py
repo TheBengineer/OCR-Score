@@ -28,6 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar
 
+from backend.engine.base import SecretDef
 from backend.engine.normalized_schema import (
     NormalizedDocument,
     NormalizedPage,
@@ -109,6 +110,15 @@ class DeepseekOcrEngine(BaseVLMEngine):
     engine_id: ClassVar[str] = "deepseek-ocr"
     display_name: ClassVar[str] = "DeepSeek-OCR"
     version: ClassVar[str] = "0.1.0"
+
+    required_secrets: ClassVar[list] = [
+        SecretDef(
+            key="api_key",
+            env_var="DEEPSEEK_API_KEY",
+            display_name="DeepSeek API Key",
+            description="DeepSeek API authentication key",
+        ),
+    ]
 
     # ── Config schema ──────────────────────────────────────────────────────
 
