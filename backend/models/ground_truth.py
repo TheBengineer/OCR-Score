@@ -42,7 +42,7 @@ class GroundTruthVersion(Base):
         default=1,
     )
     source: Mapped[GroundTruthSource] = mapped_column(
-        Enum(GroundTruthSource, name="ground_truth_source", create_type=True),
+        Enum(GroundTruthSource, name="ground_truth_source", create_type=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=GroundTruthSource.MANUAL,
     )

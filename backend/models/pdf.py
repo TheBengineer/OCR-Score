@@ -69,7 +69,7 @@ class PDF(Base):
         default="application/pdf",
     )
     status: Mapped[PDFStatus] = mapped_column(
-        Enum(PDFStatus, name="pdf_status", create_type=True),
+        Enum(PDFStatus, name="pdf_status", create_type=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=PDFStatus.UPLOADING,
     )

@@ -46,7 +46,7 @@ class OCRRun(Base):
         nullable=False,
     )
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, name="run_status", create_type=True),
+        Enum(RunStatus, name="run_status", create_type=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=RunStatus.PENDING,
     )

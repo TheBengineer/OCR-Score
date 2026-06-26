@@ -1,39 +1,20 @@
-# syntax=docker/dockerfile:1
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1
-
-RUN pip install --no-cache-dir uv
-
-WORKDIR /app
-
-COPY pyproject.toml .
-RUN uv sync --no-dev --frozen 2>/dev/null || uv pip install --system -e .
-
-COPY backend/ backend/
-
-FROM python:3.12-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1
-
-RUN \
-    --mount=type=bind,from=builder,source=/usr/local/lib/python3.12/site-packages,target=/usr/local/lib/python3.12/site-packages \
-    --mount=type=bind,from=builder,source=/app,target=/app \
-    :
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /app /app
+COPY pyproject.toml .
+COPY backend/ backend/
+
+RUN pip install --no-cache-dir -e ".[dev]"
 
 EXPOSE 8000
 

@@ -45,7 +45,7 @@ class Score(Base):
         comment="NULL if computed against multiple engines (consensus) or no GT",
     )
     level: Mapped[ScoreLevel] = mapped_column(
-        Enum(ScoreLevel, name="score_level", create_type=True),
+        Enum(ScoreLevel, name="score_level", create_type=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
     page_number: Mapped[int | None] = mapped_column(
@@ -55,7 +55,7 @@ class Score(Base):
         comment="Page number when level is page-specific; NULL for document-level",
     )
     metric: Mapped[ScoreMetric] = mapped_column(
-        Enum(ScoreMetric, name="score_metric", create_type=True),
+        Enum(ScoreMetric, name="score_metric", create_type=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
     value: Mapped[float] = mapped_column(
