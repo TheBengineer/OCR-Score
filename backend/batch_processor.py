@@ -27,6 +27,7 @@ from backend.models.enums import RunStatus
 from backend.models.pdf import PDF
 from backend.models.run import OCRRun
 from backend.run_orchestrator import RunOrchestrator, RunOrchestratorError
+from backend.database import async_session_factory
 
 # ── Types ───────────────────────────────────────────────────────────────────
 
@@ -204,21 +205,23 @@ class BatchProcessor:
                     completed += 1
                 else:
                     await self._orchestrator.execute_run(run.id)
-                    # Re-fetch run to get final status
-                    result = await self._db.execute(
-                        select(OCRRun).where(OCRRun.id == run.id),
-                    )
-                    updated_run = result.scalars().one_or_none()
-                    if updated_run and updated_run.status == RunStatus.COMPLETED:
-                        item.status = BatchStatus.COMPLETED
-                        completed += 1
-                    elif updated_run and updated_run.status == RunStatus.FAILED:
-                        item.status = BatchStatus.FAILED
-                        item.message = updated_run.error_message
-                        failed += 1
-                    else:
-                        item.status = BatchStatus.COMPLETED
-                        completed += 1
+                    # Use a fresh session to re-fetch — execute_run leaves
+                    # the shared session connection in a prepared state.
+                    async with async_session_factory() as fresh_db:
+                        result = await fresh_db.execute(
+                            select(OCRRun).where(OCRRun.id == run.id),
+                        )
+                        updated_run = result.scalars().one_or_none()
+                        if updated_run and updated_run.status == RunStatus.COMPLETED:
+                            item.status = BatchStatus.COMPLETED
+                            completed += 1
+                        elif updated_run and updated_run.status == RunStatus.FAILED:
+                            item.status = BatchStatus.FAILED
+                            item.message = updated_run.error_message
+                            failed += 1
+                        else:
+                            item.status = BatchStatus.COMPLETED
+                            completed += 1
 
             except RunOrchestratorError as exc:
                 item.status = BatchStatus.FAILED
