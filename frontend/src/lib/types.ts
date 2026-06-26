@@ -493,3 +493,45 @@ export interface ComparisonEnginesResponse {
   gt_version_id: string | null;
   engines: EngineComparisonEntry[];
 }
+
+/* ── Advanced Visualization Types (Phase 5) ──────────────────────────── */
+
+/**
+ * Confusion matrix data: counts of how often each reference character
+ * was predicted as each output character.
+ *
+ * `labels[i]` is the character label for row/column i.
+ * `matrix[i][j]` = number of times `labels[i]` was predicted as `labels[j]`.
+ * Diagonal entries represent correct predictions.
+ */
+export interface ConfusionMatrixData {
+  labels: string[];
+  matrix: number[][];
+  total: number;
+}
+
+/**
+ * A single bin in the geometric error heatmap grid.
+ * `row`/`col` are grid coordinates (0-indexed).
+ * `errorRate` is the fraction of samples in this bin that are errors (0–1).
+ * `sampleCount` is the number of OCR samples that fell into this bin.
+ */
+export interface HeatmapBin {
+  row: number;
+  col: number;
+  errorRate: number;
+  sampleCount: number;
+}
+
+/**
+ * Geometric heatmap data: spatial error density across a page.
+ * The page is divided into gridRows × gridCols bins.
+ * `bins` contains non-empty bins; empty bins should be rendered as transparent.
+ */
+export interface GeometricHeatmapData {
+  pageWidth: number;
+  pageHeight: number;
+  gridRows: number;
+  gridCols: number;
+  bins: HeatmapBin[];
+}

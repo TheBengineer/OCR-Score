@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from backend.database import engine
 from backend.routers import (
+    auth_router,
     batch_router,
     comparison_router,
     documents_router,
@@ -35,6 +36,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(auth_router)
 app.include_router(batch_router)
 app.include_router(comparison_router)
 app.include_router(documents_router)
