@@ -54,7 +54,7 @@ except ImportError:
 # ── Default configuration ───────────────────────────────────────────────────
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "api_url": "http://localhost:8000/v1/ocr",
+    "api_url": "http://localhost:8001/v1/ocr",
     "api_key": "",
     "model": "olmocr-7b",
     "dpi": 300,
@@ -112,7 +112,7 @@ class OlmocrEngine(BaseVLMEngine):
         """Return JSON Schema for olmOCR-specific configuration.
 
         Extends the base VLM schema with:
-            - **api_url** (string, default ``"http://localhost:8000/v1/ocr"``).
+            - **api_url** (string, default ``"http://localhost:8001/v1/ocr"``).
             - **api_key** (string, optional).
             - **model** (string, default ``"olmocr-7b"``).
             - **timeout_seconds** (int, default ``120``).
@@ -121,7 +121,7 @@ class OlmocrEngine(BaseVLMEngine):
         base_schema["properties"].update({
             "api_url": {
                 "type": "string",
-                "default": "http://localhost:8000/v1/ocr",
+                "default": "http://localhost:8001/v1/ocr",
                 "description": "olmOCR API endpoint URL",
             },
             "api_key": {
