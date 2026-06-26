@@ -120,7 +120,25 @@ export async function deleteDocument(id: string): Promise<void> {
 // When added, they will likely follow the pattern below.
 
 export async function listEngines(): Promise<Engine[]> {
-  return request<Engine[]>("GET", "/engines");
+  const data = await request<
+    {
+      engine_id: string;
+      display_name: string;
+      version: string;
+      config_schema: Record<string, unknown> | null;
+    }[]
+  >("GET", "/engines");
+  return data.map((e) => ({
+    id: e.engine_id,
+    slug: e.engine_id,
+    display_name: e.display_name,
+    version: e.version,
+    enabled: true,
+    config_schema: e.config_schema,
+    description: null,
+    created_at: "",
+    updated_at: "",
+  }));
 }
 
 // ── Run endpoints ──────────────────────────────────────────────────────────
@@ -188,6 +206,10 @@ export async function getRunRawOutput(runId: string): Promise<unknown> {
 }
 
 export async function cancelRun(runId: string): Promise<void> {
+  return request<void>("POST", `/runs/${runId}/cancel`);
+}
+
+export async function deleteRun(runId: string): Promise<void> {
   return request<void>("DELETE", `/runs/${runId}`);
 }
 

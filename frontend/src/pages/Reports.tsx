@@ -9,8 +9,9 @@ import {
   CheckSquare,
   Square,
   Search,
+  Trash2,
 } from "lucide-react";
-import { listRuns, getReportDownloadUrl } from "../lib/api.ts";
+import { listRuns, getReportDownloadUrl, deleteRun } from "../lib/api.ts";
 import type { Run } from "../lib/types.ts";
 
 // ── Format definitions ────────────────────────────────────────────────────
@@ -67,10 +68,12 @@ function RunCheckRow({
   run,
   selected,
   onToggle,
+  onDelete,
 }: {
   run: Run;
   selected: boolean;
   onToggle: () => void;
+  onDelete: () => void;
 }) {
   const statusColors: Record<string, string> = {
     completed: "text-emerald-600",
@@ -119,6 +122,17 @@ function RunCheckRow({
       <span className={`shrink-0 text-xs font-medium ${color}`}>
         {run.status}
       </span>
+      <button
+        type="button"
+        className="shrink-0 rounded p-1 text-surface-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+        title="Delete run"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -205,6 +219,23 @@ export default function Reports() {
 
     // Reset downloading state after a brief delay
     setTimeout(() => setDownloading(null), 1500);
+  }
+
+  async function handleDeleteRun(id: string) {
+    if (!window.confirm("Delete this run permanently? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await deleteRun(id);
+      setRuns((prev) => prev.filter((r) => r.id !== id));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    } catch {
+      // silently fail
+    }
   }
 
   // ── Render states ───────────────────────────────────────────────────────
@@ -323,6 +354,7 @@ export default function Reports() {
                 run={run}
                 selected={selectedIds.has(run.id)}
                 onToggle={() => toggleRun(run.id)}
+                onDelete={() => handleDeleteRun(run.id)}
               />
             ))
           ) : (

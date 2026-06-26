@@ -1,4 +1,4 @@
-"""OCR run management — start, list, retrieve, and cancel OCR processing runs.
+"""OCR run management — start, list, retrieve, cancel, and delete OCR processing runs.
 
 Endpoints
 ---------
@@ -8,7 +8,8 @@ Endpoints
 - ``GET  /api/v1/runs/{id}/results`` — List page results (paginated).
 - ``GET  /api/v1/runs/{id}/results/{page}`` — Get a single page result.
 - ``GET  /api/v1/runs/{id}/raw`` — Download raw engine output.
-- ``DELETE /api/v1/runs/{id}`` — Cancel or acknowledge terminal run.
+- ``POST /api/v1/runs/{id}/cancel`` — Cancel an in-flight run.
+- ``DELETE /api/v1/runs/{id}`` — Hard-delete a run and all associated data.
 """
 
 from __future__ import annotations
@@ -528,7 +529,7 @@ async def get_raw_output(
     return JSONResponse(content=raw_data)
 
 
-@runs_router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+@runs_router.post("/{run_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_run(
     run_id: uuid.UUID,
     orchestrator: OrchestratorDep,
@@ -543,4 +544,33 @@ async def cancel_run(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="run not found",
         )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@runs_router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_run(
+    run_id: uuid.UUID,
+    db: SessionDep,
+) -> Response:
+    """Hard-delete a run and all associated data.
+
+    Removes the run record from the database (cascading to page results,
+    scores, and score summaries) and deletes the raw engine output file
+    from content-addressable storage.
+    """
+    run = await db.get(OCRRun, run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="run not found",
+        )
+
+    # Clean up the raw output file if one exists
+    if run.raw_output_uri:
+        raw_path = Path(run.raw_output_uri)
+        if raw_path.exists():
+            raw_path.unlink()
+
+    await db.delete(run)
+    await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
