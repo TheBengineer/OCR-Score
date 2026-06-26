@@ -6,3 +6,4 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "PTH"]
 
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]
+"backend/test_*" = ["ARG002", "F841", "SIM105"]

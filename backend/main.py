@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend.database import engine
-from backend.routers import documents_router
+from backend.routers import documents_router, runs_router
 from backend.settings import settings
 
 
@@ -27,6 +27,7 @@ app = FastAPI(
 )
 
 app.include_router(documents_router)
+app.include_router(runs_router)
 
 
 @app.get("/api/v1/health")

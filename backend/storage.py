@@ -27,6 +27,21 @@ class ContentAddressableStorage:
     def __init__(self, base_path: Path) -> None:
         self._base_path = base_path.resolve()
 
+    def get_path(self, sha256: str, prefix: str = "pdfs", ext: str = "pdf") -> Path:
+        """Compute a content-addressable path for a given SHA-256 hash and prefix.
+
+        Args:
+            sha256: The SHA-256 hex digest of the file contents.
+            prefix: Directory category (e.g. ``"pdfs"``, ``"raw"``).
+            ext: File extension without the leading dot (e.g. ``"pdf"``, ``"json"``).
+
+        Returns:
+            Absolute path following the pattern::
+
+                {base}/{prefix}/{sha256[:2]}/{sha256[2:4]}/{sha256}.{ext}
+        """
+        return self._base_path / prefix / sha256[:2] / sha256[2:4] / f"{sha256}.{ext}"
+
     def _file_path(self, sha256: str) -> Path:
         """Compute the content-addressable file path for a given SHA-256 hash.
 
@@ -36,7 +51,7 @@ class ContentAddressableStorage:
         Returns:
             Absolute path where the file should be stored.
         """
-        return self._base_path / "pdfs" / sha256[:2] / sha256[2:4] / f"{sha256}.pdf"
+        return self.get_path(sha256, prefix="pdfs", ext="pdf")
 
     async def store(self, file_bytes: bytes, sha256: str) -> Path:
         """Store file bytes at the content-addressable path.
