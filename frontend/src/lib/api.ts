@@ -126,6 +126,7 @@ export async function listEngines(): Promise<Engine[]> {
       display_name: string;
       version: string;
       config_schema: Record<string, unknown> | null;
+      secret_schema: { key: string; env_var: string | null; display_name: string; description: string }[] | null;
     }[]
   >("GET", "/engines");
   return data.map((e) => ({
@@ -135,6 +136,7 @@ export async function listEngines(): Promise<Engine[]> {
     version: e.version,
     enabled: true,
     config_schema: e.config_schema,
+    secret_schema: e.secret_schema ?? null,
     description: null,
     created_at: "",
     updated_at: "",

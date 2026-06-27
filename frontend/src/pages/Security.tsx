@@ -19,12 +19,8 @@ async function putSecrets(slug: string, secrets: Record<string, string>): Promis
   });
 }
 
-interface EngineWithSecrets extends Engine {
-  secret_schema: { key: string; env_var: string | null; display_name: string; description: string }[];
-}
-
 export default function Security() {
-  const [engines, setEngines] = useState<EngineWithSecrets[]>([]);
+  const [engines, setEngines] = useState<Engine[]>([]);
   const [values, setValues] = useState<Record<string, Record<string, string>>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState<string | null>(null);
@@ -35,7 +31,7 @@ export default function Security() {
     let cancelled = false;
     async function load() {
       try {
-        const list = await listEngines() as unknown as EngineWithSecrets[];
+        const list = await listEngines();
         if (cancelled) return;
         setEngines(list);
 
@@ -88,7 +84,9 @@ export default function Security() {
     );
   }
 
-  const enginesWithSecrets = engines.filter((e) => e.secret_schema?.length > 0);
+  const enginesWithSecrets = engines.filter(
+    (e) => e.secret_schema != null && e.secret_schema.length > 0,
+  );
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -126,7 +124,7 @@ export default function Security() {
               </div>
 
               <div className="space-y-4 px-6 py-4">
-                {engine.secret_schema.map((secret) => {
+                {engine.secret_schema!.map((secret) => {
                   const fieldId = `${engine.slug}-${secret.key}`;
                   const val = values[engine.slug]?.[secret.key] ?? "";
                   const isVisible = visible[fieldId];

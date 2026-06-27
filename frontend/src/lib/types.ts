@@ -72,6 +72,7 @@ export interface Engine {
   version: string;
   enabled: boolean;
   config_schema: Record<string, unknown> | null;
+  secret_schema?: { key: string; env_var: string | null; display_name: string; description: string }[] | null;
   description: string | null;
   created_at: string;
   updated_at: string;
