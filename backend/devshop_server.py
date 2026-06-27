@@ -126,6 +126,12 @@ def _worker_loop() -> None:
                 cmd.insert(3, "--dangerously-skip-permissions")
 
             with _lock:
+                # Check if cancelled between queue pop and process start
+                if task.get("status") == "cancelled":
+                    _signal_completion(task["task_id"])
+                    _save_task(task)
+                    _current_task = None
+                    continue
                 _current_proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
@@ -399,9 +405,6 @@ def _self_edit(change_desc: str) -> dict[str, Any]:
 
 # ── Project management (oversight loops) ───────────────────────────────────────
 
-_PROJECTS: dict[str, dict[str, Any]] = {}
-_PROJECT_LOCK = threading.Lock()
-
 
 def _llm_plan(goal: str) -> list[str]:
     """Ask the LLM to break *goal* into concrete, actionable steps."""
@@ -562,7 +565,7 @@ def _run_project_loop(project_id: str) -> None:
                     _save_project(project)
                     if attempt < step["max_attempts"] - 1:
                         # Re-plan the step based on feedback
-                        revised_goal = f"{step['label']} (REVISION: {feedback[:200]})"
+                        revised_goal = f"{step['label']} (REVISION: {llm_feedback[:200]})"
                         step["label"] = revised_goal
             else:
                 step["status"] = "failed"
@@ -724,6 +727,7 @@ class DevshopHandler(BaseHTTPRequestHandler):
                     {"method": "GET", "path": "/task/<id>/files", "desc": "List generated files with content"},
                     {"method": "GET", "path": "/task/<id>/files/<path>", "desc": "Single file content"},
                     {"method": "GET", "path": "/project/<id>", "desc": "Project status with step breakdown"},
+                    {"method": "GET", "path": "/project/list", "desc": "List all project IDs"},
                     {"method": "POST", "path": "/task", "desc": "Submit a goal"},
                     {"method": "POST", "path": "/plan", "desc": "Multi-step plan"},
                     {"method": "POST", "path": "/cancel/<id>", "desc": "Cancel a task"},
