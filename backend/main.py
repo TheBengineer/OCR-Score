@@ -10,6 +10,7 @@ from backend.models.engine import OCREngine
 from backend.routers import (
     auth_router,
     batch_router,
+    codegen_router,
     comparison_router,
     documents_router,
     engine_router,
@@ -76,6 +77,7 @@ app = FastAPI(
 
 app.include_router(auth_router)
 app.include_router(batch_router)
+app.include_router(codegen_router)
 app.include_router(comparison_router)
 app.include_router(documents_router)
 app.include_router(engine_router)

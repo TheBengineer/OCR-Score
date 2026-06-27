@@ -2,6 +2,7 @@
 
 from backend.routers.auth import auth_router
 from backend.routers.batch import batch_router
+from backend.routers.codegen import codegen_router
 from backend.routers.comparison import comparison_router
 from backend.routers.documents import documents_router
 from backend.routers.engines import engine_router
@@ -14,6 +15,7 @@ from backend.routers.ws import ws_router
 __all__: list[str] = [
     "auth_router",
     "batch_router",
+    "codegen_router",
     "comparison_router",
     "documents_router",
     "engine_router",
