@@ -3,28 +3,29 @@
 
 Accepts high-level goals over HTTP, executes them using the opencode CLI
 (which leverages deepseek-v4-flash LLM), and returns compact status updates.
-
 Designed for low-bandwidth links: minimal JSON in, minimal JSON out.
 
 Usage (remote):
     python3 devshop_server.py [--port 8900] [--opencode /path/to/opencode]
+                              [--allow-dangerous] [--tasks-dir /path/to/tasks]
 
 Usage (local — send a goal):
     curl -X POST http://remote:8900/task \\
       -H "Content-Type: application/json" \\
       -d '{"goal": "build a simple TODO app in Python"}'
 
-Usage (local — poll status):
-    curl http://remote:8900/task/<task_id>
-
 Architecture:
-    POST /task       — Submit a goal → returns {"task_id": "...", "status": "pending"}
-    GET  /task/<id>  — Poll task status → {"status": "done"|"running"|"failed", "summary": {...}}
-    GET  /status     — Server health → {"ok": true, "queue_depth": N, "uptime": "..."}
-    POST /plan       — Submit a plan for execution (advanced) → {"plan_id": "...", "steps": [...]}
+    POST /task            — Submit a goal → {"task_id": "...", "status": "pending"}
+    GET  /task/<id>       — Poll task status + file summary
+    GET  /task/<id>/files — List generated files with full contents
+    GET  /task/<id>/wait  — Long-poll: blocks until task completes (up to 120s)
+    POST /plan            — Multi-step sequential plan → auto-chains steps
+    POST /cancel/<id>     — Cancel a running/pending task
+    GET  /status          — Server health
 
-    Tasks run sequentially (one at a time) to avoid overwhelming the LLM.
-    Each task is stored as a JSON file in ./devshop_tasks/ for persistence.
+    --allow-dangerous:  Enables the opencode --dangerously-skip-permissions flag.
+                        Without this flag, the server runs with guardrails.
+                        NEVER enable on a publicly-reachable port.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -42,19 +44,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Configuration (set from CLI args in main()) ──────────────────────────────
 
 DEFAULT_PORT = 8900
-OPENCODE_BIN = os.environ.get(
-    "DEVSHOP_OPENCODE_BIN",
-    subprocess.run(
-        ["which", "opencode"], capture_output=True, text=True
-    ).stdout.strip() or "/home/bengi/.opencode/bin/opencode",
-)
-TASKS_DIR = Path(os.environ.get("DEVSHOP_TASKS_DIR", "/tmp/devshop_tasks"))
-TASKS_DIR.mkdir(exist_ok=True)
+OPENCODE_BIN = ""
+TASKS_DIR: Path = Path("/tmp/devshop_tasks")
+ALLOW_DANGEROUS = False
 START_TIME = time.time()
 _lock = threading.Lock()
+
+# Background worker state
+_task_queue: list[dict[str, Any]] = []
+_current_task: dict[str, Any] | None = None
+_current_proc: subprocess.Popen | None = None
+_worker_thread: threading.Thread | None = None
+_worker_event = threading.Event()
+_completion_events: dict[str, threading.Event] = {}
+_PLAN_SEQUENTIAL = True
 
 
 # ── Task persistence ──────────────────────────────────────────────────────────
@@ -62,6 +68,10 @@ _lock = threading.Lock()
 
 def _task_path(task_id: str) -> Path:
     return TASKS_DIR / f"{task_id}.json"
+
+
+def _task_workdir(task_id: str) -> Path:
+    return TASKS_DIR / task_id
 
 
 def _load_task(task_id: str) -> dict[str, Any] | None:
@@ -83,15 +93,9 @@ def _next_task_id() -> str:
 # ── Background worker ─────────────────────────────────────────────────────────
 
 
-_task_queue: list[dict[str, Any]] = []
-_current_task: dict[str, Any] | None = None
-_worker_thread: threading.Thread | None = None
-_worker_event = threading.Event()
-
-
 def _worker_loop() -> None:
     """Background thread: pick tasks from queue, execute, store result."""
-    global _current_task  # noqa: PLW0603
+    global _current_task, _current_proc  # noqa: PLW0603
     while True:
         _worker_event.wait()
         _worker_event.clear()
@@ -111,44 +115,66 @@ def _worker_loop() -> None:
             goal = task["goal"]
             workdir = Path(task["workdir"])
 
-            # Execute the goal via opencode
-            result = subprocess.run(
-                [OPENCODE_BIN, "run", goal,
-                 "--dangerously-skip-permissions", "--print-logs",
-                 "--dir", str(workdir),
-                 "--model", "opencode-go/deepseek-v4-flash"],
-                capture_output=True, text=True,
-                timeout=600,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            )
+            cmd = [OPENCODE_BIN, "run", goal, "--print-logs", "--dir", str(workdir),
+                   "--model", "opencode-go/deepseek-v4-flash"]
+            if ALLOW_DANGEROUS:
+                cmd.insert(3, "--dangerously-skip-permissions")
 
-            log = (result.stdout or "") + "\n" + (result.stderr or "")
+            with _lock:
+                _current_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                )
+                proc = _current_proc
 
-            if result.returncode != 0:
+            stdout, stderr = proc.communicate(timeout=600)
+            log = (stdout or "") + "\n" + (stderr or "")
+
+            with _lock:
+                _current_proc = None
+
+            # If task was cancelled mid-flight via POST /cancel, skip overwrite
+            if task.get("status") == "cancelled":
+                _signal_completion(task["task_id"])
+                _save_task(task)
+            elif proc.returncode != 0:
                 task["status"] = "failed"
                 task["error"] = log[-1000:]
             else:
-                # Collect generated files from the workdir
                 files = _collect_files(workdir)
                 task["status"] = "done"
                 task["summary"] = {
                     "files": files,
                     "file_count": len(files),
-                    "returncode": result.returncode,
+                    "returncode": proc.returncode,
                 }
 
         except subprocess.TimeoutExpired:
+            with _lock:
+                if _current_proc:
+                    _current_proc.kill()
+                    _current_proc = None
             task["status"] = "failed"
             task["error"] = "Timed out after 600s"
         except Exception as exc:
             task["status"] = "failed"
             task["error"] = str(exc)
 
-        task["finished_at"] = datetime.now(timezone.utc).isoformat()
-        _save_task(task)
+        # Only set finished_at for non-cancelled tasks (cancel already saved)
+        if task.get("status") != "cancelled":
+            task["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _save_task(task)
+
+        _signal_completion(task["task_id"])
 
         with _lock:
             _current_task = None
+
+        # If this task is part of a plan chain, submit the next step
+        plan_queue = task.get("_plan_queue")
+        if plan_queue and task["status"] == "done":
+            _do_submit_task(plan_queue[0], plan_queue[0], parent_id=task["task_id"],
+                            plan_queue=plan_queue[1:])
 
 
 def _collect_files(workdir: Path) -> list[dict[str, Any]]:
@@ -157,19 +183,43 @@ def _collect_files(workdir: Path) -> list[dict[str, Any]]:
     for f in sorted(workdir.rglob("*")):
         if not f.is_file():
             continue
-        rel = str(f.relative_to(workdir))
-        # Skip opencode runtime files
+        # Security: reject path traversal
+        try:
+            rel = str(f.relative_to(workdir))
+        except ValueError:
+            continue
         if rel.startswith(".opencode") or rel.startswith(".omo") or rel.startswith(".git"):
             continue
         try:
             size = f.stat().st_size
-            # Only include first 200 chars of content for summary
             text = f.read_text(errors="replace")[:200]
         except Exception:
             size = 0
             text = ""
         files.append({"path": rel, "size": size, "preview": text})
     return files
+
+
+def _read_file_content(workdir: Path, file_rel: str) -> str | None:
+    """Read a full file, validating it's within the workdir."""
+    target = (workdir / file_rel).resolve()
+    workdir_resolved = workdir.resolve()
+    if not str(target).startswith(str(workdir_resolved) + "/"):
+        return None  # path traversal
+    if not target.is_file():
+        return None
+    try:
+        return target.read_text(errors="replace")[:65536]  # cap at 64KB per file
+    except Exception:
+        return None
+
+
+def _signal_completion(task_id: str) -> None:
+    """Signal any long-poll waiters that a task completed."""
+    with _lock:
+        ev = _completion_events.get(task_id)
+        if ev:
+            ev.set()
 
 
 def _start_worker() -> None:
@@ -179,22 +229,19 @@ def _start_worker() -> None:
         _worker_thread.start()
 
 
-def submit_task(goal: str) -> dict[str, Any]:
-    """Create a task, enqueue it, and return immediately."""
+def _do_submit_task(goal: str, step_label: str, *,
+                    parent_id: str | None = None,
+                    plan_queue: list[str] | None = None) -> dict[str, Any]:
+    """Internal: create a task, enqueue, return immediately."""
     task_id = _next_task_id()
     workdir = TASKS_DIR / task_id
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # Init git repo
     subprocess.run(["git", "init"], cwd=str(workdir), capture_output=True)
-    subprocess.run(
-        ["git", "config", "user.email", "devshop@local"],
-        cwd=str(workdir), capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Devshop"],
-        cwd=str(workdir), capture_output=True,
-    )
+    subprocess.run(["git", "config", "user.email", "devshop@local"],
+                   cwd=str(workdir), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Devshop"],
+                   cwd=str(workdir), capture_output=True)
     (workdir / ".gitignore").write_text(".opencode/\n.omo/\n")
     subprocess.run(["git", "add", ".gitignore"], cwd=str(workdir), capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(workdir), capture_output=True)
@@ -202,19 +249,70 @@ def submit_task(goal: str) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_id": task_id,
         "goal": goal,
+        "step_label": step_label,
         "status": "pending",
         "workdir": str(workdir),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if parent_id:
+        task["parent_task_id"] = parent_id
+    if plan_queue:
+        task["_plan_queue"] = plan_queue
+
     _save_task(task)
 
     with _lock:
         _task_queue.append(task)
+        _completion_events[task_id] = threading.Event()
 
     _worker_event.set()
     _start_worker()
 
     return {"task_id": task_id, "status": "pending", "goal": goal}
+
+
+def submit_task(goal: str) -> dict[str, Any]:
+    """Public: create a single task."""
+    return _do_submit_task(goal, goal)
+
+
+def submit_plan(steps: list[str]) -> dict[str, Any]:
+    """Submit a multi-step plan. Each step executes sequentially on success."""
+    if not steps:
+        return {"error": "plan must be a non-empty list"}
+    first = steps[0]
+    remaining = steps[1:] if len(steps) > 1 else None
+    result = _do_submit_task(first, first, plan_queue=remaining)
+    result["total_steps"] = len(steps)
+    return result
+
+
+def cancel_task(task_id: str) -> bool:
+    """Cancel a pending or running task. Returns True if cancelled."""
+    global _current_proc  # noqa: PLW0603
+    with _lock:
+        # Remove from queue if pending
+        for i, t in enumerate(_task_queue):
+            if t["task_id"] == task_id:
+                _task_queue.pop(i)
+                if task_id in _completion_events:
+                    _completion_events[task_id].set()
+                t["status"] = "cancelled"
+                t["finished_at"] = datetime.now(timezone.utc).isoformat()
+                _save_task(t)
+                return True
+        # Kill if running
+        if _current_task and _current_task["task_id"] == task_id:
+            if _current_proc:
+                _current_proc.terminate()
+                _current_proc = None
+            _current_task["status"] = "cancelled"
+            _current_task["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _save_task(_current_task)
+            if task_id in _completion_events:
+                _completion_events[task_id].set()
+            return True
+    return False
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -224,8 +322,7 @@ class DevshopHandler(BaseHTTPRequestHandler):
     """Minimal JSON-only HTTP handler."""
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        """Quiet logging — only log errors."""
-        if args and args[0].startswith("4") or args[0].startswith("5"):
+        if args and str(args[0]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
     def _send_json(self, data: dict[str, Any], code: int = 200) -> None:
@@ -246,9 +343,26 @@ class DevshopHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return None
 
+    def _task_status(self, task: dict[str, Any]) -> dict[str, Any]:
+        resp: dict[str, Any] = {
+            "task_id": task["task_id"],
+            "status": task["status"],
+            "goal": task.get("step_label", task["goal"]),
+        }
+        if task["status"] == "done":
+            resp["summary"] = task.get("summary", {})
+        if task["status"] == "failed":
+            resp["error"] = task.get("error", "unknown error")
+        resp["created_at"] = task.get("created_at", "")
+        return resp
+
+    # ── POST ─────────────────────────────────────────────────────────────
+
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/task":
-            body = self._read_body()
+        path = self.path
+        body = self._read_body()
+
+        if path == "/task":
             if not body or "goal" not in body:
                 self._send_json({"error": "missing 'goal' in request body"}, 400)
                 return
@@ -259,58 +373,98 @@ class DevshopHandler(BaseHTTPRequestHandler):
             result = submit_task(goal)
             self._send_json(result, 202)
 
-        elif self.path == "/plan":
-            body = self._read_body()
+        elif path == "/plan":
             if not body or "plan" not in body:
                 self._send_json({"error": "missing 'plan' in request body"}, 400)
                 return
-            # Plans are multi-step — submit the first step as a task
             plan = body["plan"]
-            if isinstance(plan, list) and len(plan) > 0:
-                first_goal = plan[0] if isinstance(plan[0], str) else plan[0].get("goal", str(plan[0]))
-                result = submit_task(first_goal)
-                result["plan_steps"] = len(plan)
-                self._send_json(result, 202)
-            else:
+            if not isinstance(plan, list) or len(plan) == 0:
                 self._send_json({"error": "plan must be a non-empty list"}, 400)
+                return
+            if not all(isinstance(s, str) for s in plan):
+                self._send_json({"error": "each plan step must be a string"}, 400)
+                return
+            result = submit_plan(plan)
+            if "error" in result:
+                self._send_json(result, 400)
+            else:
+                self._send_json(result, 202)
+
+        elif path.startswith("/cancel/"):
+            task_id = path[8:]
+            if not re.match(r"^[a-f0-9]{12}$", task_id):
+                self._send_json({"error": "invalid task_id"}, 400)
+                return
+            if cancel_task(task_id):
+                self._send_json({"task_id": task_id, "status": "cancelled"})
+            else:
+                self._send_json({"error": "task not found or already finished"}, 404)
 
         else:
             self._send_json({"error": "not found"}, 404)
 
+    # ── GET ──────────────────────────────────────────────────────────────
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/status":
+        path = self.path
+
+        if path == "/status":
             with _lock:
                 queue_depth = len(_task_queue)
                 current = _current_task["task_id"] if _current_task else None
             uptime = time.time() - START_TIME
             self._send_json({
-                "ok": True,
-                "queue_depth": queue_depth,
-                "current_task": current,
-                "uptime_seconds": round(uptime),
-                "version": "0.1.0",
+                "ok": True, "queue_depth": queue_depth,
+                "current_task": current, "uptime_seconds": round(uptime),
+                "allow_dangerous": ALLOW_DANGEROUS, "version": "0.1.0",
             })
 
-        elif self.path.startswith("/task/"):
-            task_id = self.path[6:]
+        elif path.startswith("/task/"):
+            remainder = path[6:]
+            parts = remainder.split("/", 1)
+            task_id = parts[0]
+
             if not re.match(r"^[a-f0-9]{12}$", task_id):
                 self._send_json({"error": "invalid task_id"}, 400)
                 return
+
             task = _load_task(task_id)
             if task is None:
                 self._send_json({"error": "task not found"}, 404)
                 return
-            # Return compact response
-            resp: dict[str, Any] = {
-                "task_id": task["task_id"],
-                "status": task["status"],
-                "goal": task["goal"],
-            }
-            if task["status"] == "done":
-                resp["summary"] = task.get("summary", {})
-            if task["status"] == "failed":
-                resp["error"] = task.get("error", "unknown error")
-            self._send_json(resp)
+
+            # /task/<id>/files or /task/<id>/files/<path>
+            if len(parts) == 2 and parts[1] == "files":
+                workdir = _task_workdir(task_id)
+                generated = _collect_files(workdir)
+                # Return full content for each file
+                for f in generated:
+                    full = _read_file_content(workdir, f["path"])
+                    if full:
+                        f["content"] = full
+                self._send_json({"task_id": task_id, "files": generated})
+
+            elif len(parts) == 2 and parts[1].startswith("files/"):
+                file_path = parts[1][6:]  # strip "files/"
+                workdir = _task_workdir(task_id)
+                content = _read_file_content(workdir, file_path)
+                if content is None:
+                    self._send_json({"error": "file not found"}, 404)
+                else:
+                    self._send_json({"path": file_path, "content": content})
+
+            elif len(parts) == 2 and parts[1] == "wait":
+                # Long-poll: block until task completes (up to 120s)
+                ev = _completion_events.get(task_id)
+                if task["status"] in ("pending", "running") and ev:
+                    ev.wait(timeout=120)
+                    # Re-read after event
+                    task = _load_task(task_id) or task
+                self._send_json(self._task_status(task))
+
+            else:
+                # /task/<id> — compact status
+                self._send_json(self._task_status(task))
 
         else:
             self._send_json({"error": "not found"}, 404)
@@ -320,21 +474,49 @@ class DevshopHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else DEFAULT_PORT
+    global ALLOW_DANGEROUS, OPENCODE_BIN, TASKS_DIR  # noqa: PLW0603
 
-    if "--opencode" in sys.argv:
-        idx = sys.argv.index("--opencode")
-        global OPENCODE_BIN  # noqa: PLW0603
-        OPENCODE_BIN = sys.argv[idx + 1]
+    args = sys.argv[1:]
+    port = DEFAULT_PORT
 
-    # Verify opencode is available
-    if not Path(OPENCODE_BIN).exists():
-        print(f"Warning: opencode not found at {OPENCODE_BIN}", file=sys.stderr)
-        print("Set DEVSHOP_OPENCODE_BIN env var or pass --opencode <path>", file=sys.stderr)
+    if "--port" in args:
+        idx = args.index("--port")
+        port = int(args[idx + 1])
+
+    if "--opencode" in args:
+        idx = args.index("--opencode")
+        OPENCODE_BIN = args[idx + 1]
+    else:
+        OPENCODE_BIN = os.environ.get(
+            "DEVSHOP_OPENCODE_BIN",
+            subprocess.run(["which", "opencode"], capture_output=True, text=True
+                          ).stdout.strip() or "",
+        )
+
+    if "--allow-dangerous" in args:
+        ALLOW_DANGEROUS = True
+
+    if "--tasks-dir" in args:
+        idx = args.index("--tasks-dir")
+        TASKS_DIR = Path(args[idx + 1])
+    else:
+        TASKS_DIR = Path(os.environ.get("DEVSHOP_TASKS_DIR", "/tmp/devshop_tasks"))
+
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not OPENCODE_BIN or not Path(OPENCODE_BIN).exists():
+        print("ERROR: opencode not found. Install it or set DEVSHOP_OPENCODE_BIN.", file=sys.stderr)
+        sys.exit(1)
+
+    if not ALLOW_DANGEROUS:
+        print("NOTE: Running WITHOUT --allow-dangerous.", flush=True)
+        print("  opencode will prompt for permission on every file write.", flush=True)
+        print("  Tasks may hang waiting for input. Add --allow-dangerous if safe.", flush=True)
 
     server = HTTPServer(("0.0.0.0", port), DevshopHandler)
     print(f"Devshop server listening on http://0.0.0.0:{port}", flush=True)
     print(f"  OPENCODE_BIN={OPENCODE_BIN}", flush=True)
+    print(f"  ALLOW_DANGEROUS={ALLOW_DANGEROUS}", flush=True)
     print(f"  TASKS_DIR={TASKS_DIR.resolve()}", flush=True)
 
     try:
