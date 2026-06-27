@@ -45,14 +45,19 @@ class CodeGenResponse(BaseModel):
 
 
 async def _run_opencode(goal: str, workdir: Path) -> str:
-    """Run ``opencode run <goal>`` inside *workdir* and return stderr+stdout."""
+    """Run ``opencode run <goal>`` inside *workdir* and return stderr+stdout.
+
+    Uses the ``opencode-go`` provider (which has a valid API key in
+    ``~/.local/share/opencode/auth.json``) rather than the default LM Studio
+    provider whose endpoint is unreachable.
+    """
     proc = await asyncio.create_subprocess_exec(
         _OPENCODE,
-        "run",
-        goal,
+        "run", goal,
         "--dangerously-skip-permissions",
         "--print-logs",
         "--dir", str(workdir),
+        "--model", "opencode-go/deepseek-v4-flash",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_GIT_ENV,
