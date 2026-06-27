@@ -6,14 +6,19 @@ result in a fresh git repo under ``generated/``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 _OPENCODE = os.environ.get("OPENCODE_BIN", "/home/bengi/.opencode/bin/opencode")
 
@@ -24,6 +29,29 @@ _BASE = Path(tempfile.gettempdir()) / "ocrscore-codegen"
 _BASE.mkdir(parents=True, exist_ok=True)
 
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+# Cleanup: delete projects older than 1 hour
+_TTL_SECONDS = 3600
+_last_cleanup: float = 0
+
+
+def _cleanup_old_projects() -> None:
+    """Remove generated project directories older than ``_TTL_SECONDS``."""
+    global _last_cleanup  # noqa: PLW0603
+    now = time.time()
+    if now - _last_cleanup < _TTL_SECONDS / 2:
+        return
+    _last_cleanup = now
+    for child in _BASE.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            age = now - child.stat().st_mtime
+            if age > _TTL_SECONDS:
+                shutil.rmtree(child, ignore_errors=True)
+                logger.info("cleaned up expired project %s", child.name)
+        except OSError:
+            pass
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -62,11 +90,23 @@ async def _run_opencode(goal: str, workdir: Path) -> str:
         stderr=asyncio.subprocess.PIPE,
         env=_GIT_ENV,
     )
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=300,
-    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=300,
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+
     combined = (stdout or b"").decode("utf-8", errors="replace")
     combined += "\n" + (stderr or b"").decode("utf-8", errors="replace")
+
+    if proc.returncode != 0:
+        msg = f"opencode exited with code {proc.returncode}"
+        logger.warning("%s\n%s", msg, combined[-500:])
+        raise RuntimeError(f"{msg}: {combined[-500:]}")
+
     return combined
 
 
@@ -116,6 +156,8 @@ async def generate_code(body: CodeGenRequest) -> CodeGenResponse:
     The goal is sent to the LLM which writes files into a fresh git repo
     under ``generated/``.  The response lists every file created.
     """
+    _cleanup_old_projects()
+
     project_id = uuid.uuid4().hex[:12]
     workdir = _BASE / project_id
     workdir.mkdir(parents=True, exist_ok=True)
@@ -153,14 +195,20 @@ async def generate_code(body: CodeGenRequest) -> CodeGenResponse:
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Code generation timed out after 300s",
         ) from None
-    except Exception as exc:
+    except RuntimeError as exc:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Code generation failed: {exc}",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
         ) from exc
 
     commit_hash = _git_commit(workdir)
     files = _walk_files(workdir)
+
+    if not [f for f in files if f != ".gitignore"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="LLM did not generate any files for the given goal",
+        )
 
     # Read generated file contents
     contents: dict[str, str] = {}
