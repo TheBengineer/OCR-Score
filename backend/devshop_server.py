@@ -330,60 +330,71 @@ _SELF_PATH = Path(__file__).resolve()
 
 
 def _self_edit(change_desc: str) -> dict[str, Any]:
-    """Modify this server's source code using opencode to implement *change_desc*.
+    """Modify this server's source code using opencode to implement *change_desc*."""
+    # Concurrency guard — only one self-edit at a time
+    if not hasattr(_self_edit, "_lock"):
+        _self_edit._lock = threading.Lock()  # noqa: B010
+    if not _self_edit._lock.acquire(blocking=False):  # noqa: B019
+        return {"success": False, "error": "Another self-edit is already in progress"}
 
-    The LLM reads the current source, plans the modification, applies it,
-    and validates syntax.  On success the file is overwritten and the server
-    should be restarted.
-    """
-    source = _SELF_PATH.read_text()
-    plan_dir = TASKS_DIR / "_self_edit"
-    plan_dir.mkdir(parents=True, exist_ok=True)
-
-    prompt = (
-        f"Modify the Python file at {_SELF_PATH} to implement this change:\n\n"
-        f"{change_desc}\n\n"
-        f"RULES:\n"
-        f"1. Output ONLY the COMPLETE modified file content.\n"
-        f"2. Preserve ALL existing functionality.\n"
-        f"3. Use the same style, imports, and conventions.\n"
-        f"4. The file is a standalone stdlib-only HTTP server.\n"
-        f"5. Write the result to {plan_dir / 'devshop_server.py'}.\n"
-        f"6. Ensure `python3 -c \"import ast; ast.parse(open('{plan_dir / 'devshop_server.py'}').read())\"` passes."
-    )
-
-    result = subprocess.run(
-        [OPENCODE_BIN, "run", prompt, "--print-logs",
-         "--dir", str(plan_dir), "--model", MODEL,
-         "--dangerously-skip-permissions"],
-        capture_output=True, text=True, timeout=300,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
-
-    generated_path = plan_dir / "devshop_server.py"
-    if not generated_path.exists():
-        return {"success": False, "error": "LLM did not generate a modified file",
-                "log": (result.stdout or "")[-500:]}
-
-    modified = generated_path.read_text()
-
-    # Validate syntax
     try:
-        compile(modified, str(_SELF_PATH), "exec")
-    except SyntaxError as e:
-        return {"success": False, "error": f"Syntax error in generated code: {e}"}
+        source = _SELF_PATH.read_text()
+        plan_dir = TASKS_DIR / "_self_edit"
+        plan_dir.mkdir(parents=True, exist_ok=True)
 
-    # Backup and apply
-    backup = _SELF_PATH.with_suffix(".py.bak")
-    _SELF_PATH.rename(backup)
-    _SELF_PATH.write_text(modified)
+        prompt = (
+            f"Modify the Python file at {_SELF_PATH} to implement this change:\n\n"
+            f"{change_desc}\n\n"
+            f"RULES:\n"
+            f"1. Output ONLY the COMPLETE modified file content.\n"
+            f"2. Preserve ALL existing functionality.\n"
+            f"3. Use the same style, imports, and conventions.\n"
+            f"4. The file is a standalone stdlib-only HTTP server.\n"
+            f"5. Write the result to {plan_dir / 'devshop_server.py'}.\n"
+            f"6. Ensure `python3 -c \"import ast; ast.parse(open('{plan_dir / 'devshop_server.py'}').read())\"` passes."
+        )
 
-    return {
-        "success": True,
-        "backup": str(backup),
-        "restart_required": True,
-        "bytes_changed": len(modified) - len(source),
-    }
+        result = subprocess.run(
+            [OPENCODE_BIN, "run", prompt, "--print-logs",
+             "--dir", str(plan_dir), "--model", MODEL,
+             "--dangerously-skip-permissions"],
+            capture_output=True, text=True, timeout=300,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+        generated_path = plan_dir / "devshop_server.py"
+        if not generated_path.exists():
+            return {"success": False, "error": "LLM did not generate a modified file",
+                    "log": (result.stdout or "")[-500:]}
+
+        modified = generated_path.read_text()
+
+        # Validate syntax
+        try:
+            compile(modified, str(_SELF_PATH), "exec")
+        except SyntaxError as e:
+            return {"success": False, "error": f"Syntax error in generated code: {e}"}
+
+        # Validate: ensure critical functions still exist
+        for required in ("do_GET", "do_POST", "_worker_loop", "main", "DevshopHandler",
+                         "submit_task", "cancel_task", "create_project", "_self_edit"):
+            if required not in modified:
+                return {"success": False,
+                        "error": f"Generated code is missing required function '{required}'"}
+
+        # Backup and apply
+        backup = _SELF_PATH.with_suffix(".py.bak")
+        _SELF_PATH.rename(backup)
+        _SELF_PATH.write_text(modified)
+
+        return {
+            "success": True,
+            "backup": str(backup),
+            "restart_required": True,
+            "bytes_changed": len(modified) - len(source),
+        }
+    finally:
+        _self_edit._lock.release()
 
 
 # ── Project management (oversight loops) ───────────────────────────────────────
@@ -516,14 +527,32 @@ def _run_project_loop(project_id: str) -> None:
                     break
                 time.sleep(5)
 
-            # Review
+            # Review: LLM assessment + objective check if Python files
             task_data = _load_task(step["task_id"])
             if task_data and task_data["status"] == "done":
-                passed, feedback = _llm_review(
-                    project["goal"], step["label"],
-                    task_data.get("summary", {}),
-                )
-                step["review"] = {"passed": passed, "feedback": feedback}
+                # Objective checks
+                obj_passed = True
+                obj_feedback = ""
+                for f_info in task_data.get("summary", {}).get("files", []):
+                    if f_info["path"].endswith(".py"):
+                        fpath = _task_workdir(step["task_id"]) / f_info["path"]
+                        if fpath.exists():
+                            try:
+                                compile(fpath.read_text(), str(fpath), "exec")
+                            except SyntaxError as e:
+                                obj_passed = False
+                                obj_feedback += f"Syntax error in {f_info['path']}: {e}\n"
+
+                if obj_passed:
+                    passed, llm_feedback = _llm_review(
+                        project["goal"], step["label"],
+                        task_data.get("summary", {}),
+                    )
+                else:
+                    passed = False
+                    llm_feedback = obj_feedback
+
+                step["review"] = {"passed": passed, "feedback": llm_feedback}
                 if passed:
                     step["status"] = "done"
                     _save_project(project)
@@ -717,7 +746,6 @@ class DevshopHandler(BaseHTTPRequestHandler):
             if project is None:
                 self._send_json({"error": "project not found"}, 404)
                 return
-            # Return compact view (omit large fields)
             view = {
                 "project_id": project["project_id"],
                 "goal": project["goal"],
@@ -738,6 +766,8 @@ class DevshopHandler(BaseHTTPRequestHandler):
                 ],
             }
             self._send_json(view)
+
+        elif path.startswith("/task/"):
             remainder = path[6:]
             parts = remainder.split("/", 1)
             task_id = parts[0]
@@ -751,19 +781,19 @@ class DevshopHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "task not found"}, 404)
                 return
 
-            # /task/<id>/files or /task/<id>/files/<path>
+            # /task/<id>/files
             if len(parts) == 2 and parts[1] == "files":
                 workdir = _task_workdir(task_id)
                 generated = _collect_files(workdir)
-                # Return full content for each file
                 for f in generated:
                     full = _read_file_content(workdir, f["path"])
                     if full:
                         f["content"] = full
                 self._send_json({"task_id": task_id, "files": generated})
 
+            # /task/<id>/files/<path>
             elif len(parts) == 2 and parts[1].startswith("files/"):
-                file_path = parts[1][6:]  # strip "files/"
+                file_path = parts[1][6:]
                 workdir = _task_workdir(task_id)
                 content = _read_file_content(workdir, file_path)
                 if content is None:
@@ -771,17 +801,16 @@ class DevshopHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"path": file_path, "content": content})
 
+            # /task/<id>/wait — long-poll
             elif len(parts) == 2 and parts[1] == "wait":
-                # Long-poll: block until task completes (up to 120s)
                 ev = _completion_events.get(task_id)
                 if task["status"] in ("pending", "running") and ev:
                     ev.wait(timeout=120)
-                    # Re-read after event
                     task = _load_task(task_id) or task
                 self._send_json(self._task_status(task))
 
+            # /task/<id> — compact status
             else:
-                # /task/<id> — compact status
                 self._send_json(self._task_status(task))
 
         else:
