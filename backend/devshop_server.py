@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Devshop v0.1.0
 """Devshop — autonomous remote agent server.
 
 Accepts high-level goals over HTTP, executes them using the opencode CLI
@@ -79,7 +80,10 @@ def _load_task(task_id: str) -> dict[str, Any] | None:
     path = _task_path(task_id)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def _save_task(task: dict[str, Any]) -> None:
@@ -319,6 +323,236 @@ def cancel_task(task_id: str) -> bool:
     return False
 
 
+# ── Self-editing helpers ───────────────────────────────────────────────────────
+
+
+_SELF_PATH = Path(__file__).resolve()
+
+
+def _self_edit(change_desc: str) -> dict[str, Any]:
+    """Modify this server's source code using opencode to implement *change_desc*.
+
+    The LLM reads the current source, plans the modification, applies it,
+    and validates syntax.  On success the file is overwritten and the server
+    should be restarted.
+    """
+    source = _SELF_PATH.read_text()
+    plan_dir = TASKS_DIR / "_self_edit"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt = (
+        f"Modify the Python file at {_SELF_PATH} to implement this change:\n\n"
+        f"{change_desc}\n\n"
+        f"RULES:\n"
+        f"1. Output ONLY the COMPLETE modified file content.\n"
+        f"2. Preserve ALL existing functionality.\n"
+        f"3. Use the same style, imports, and conventions.\n"
+        f"4. The file is a standalone stdlib-only HTTP server.\n"
+        f"5. Write the result to {plan_dir / 'devshop_server.py'}.\n"
+        f"6. Ensure `python3 -c \"import ast; ast.parse(open('{plan_dir / 'devshop_server.py'}').read())\"` passes."
+    )
+
+    result = subprocess.run(
+        [OPENCODE_BIN, "run", prompt, "--print-logs",
+         "--dir", str(plan_dir), "--model", MODEL,
+         "--dangerously-skip-permissions"],
+        capture_output=True, text=True, timeout=300,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+    generated_path = plan_dir / "devshop_server.py"
+    if not generated_path.exists():
+        return {"success": False, "error": "LLM did not generate a modified file",
+                "log": (result.stdout or "")[-500:]}
+
+    modified = generated_path.read_text()
+
+    # Validate syntax
+    try:
+        compile(modified, str(_SELF_PATH), "exec")
+    except SyntaxError as e:
+        return {"success": False, "error": f"Syntax error in generated code: {e}"}
+
+    # Backup and apply
+    backup = _SELF_PATH.with_suffix(".py.bak")
+    _SELF_PATH.rename(backup)
+    _SELF_PATH.write_text(modified)
+
+    return {
+        "success": True,
+        "backup": str(backup),
+        "restart_required": True,
+        "bytes_changed": len(modified) - len(source),
+    }
+
+
+# ── Project management (oversight loops) ───────────────────────────────────────
+
+_PROJECTS: dict[str, dict[str, Any]] = {}
+_PROJECT_LOCK = threading.Lock()
+
+
+def _llm_plan(goal: str) -> list[str]:
+    """Ask the LLM to break *goal* into concrete, actionable steps."""
+    plan_dir = TASKS_DIR / "_planner"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    prompt = (
+        f"Break this goal into 3-5 concrete, sequential steps:\n\n"
+        f"{goal}\n\n"
+        f"Output each step on a separate line starting with '- '. "
+        f"Each step must be a specific, actionable instruction that an AI agent "
+        f"can execute to generate code. No numbering, no commentary."
+    )
+    result = subprocess.run(
+        [OPENCODE_BIN, "run", prompt, "--print-logs", "--dir", str(plan_dir),
+         "--model", MODEL, "--dangerously-skip-permissions"],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    lines = [
+        ln.strip().lstrip("- ").strip()
+        for ln in (result.stdout or "").splitlines()
+        if ln.strip().startswith("-")
+    ]
+    return lines[:8] if lines else [goal]  # fallback: single step
+
+
+def _llm_review(goal: str, step_label: str, output_summary: dict[str, Any]) -> tuple[bool, str]:
+    """Ask the LLM to review whether *step_label* was successfully completed.
+
+    Returns (passed: bool, feedback: str).
+    """
+    files_summary = json.dumps(output_summary.get("files", []), indent=2)
+    review_dir = TASKS_DIR / "_reviewer"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    prompt = (
+        f"Goal: {goal}\n"
+        f"Step completed: {step_label}\n"
+        f"Generated files:\n{files_summary[:2000]}\n\n"
+        f"Did this step successfully achieve its objective? "
+        f"Answer with exactly one line: PASS or FAIL. "
+        f"Then on the next line give 1-2 sentences of feedback."
+    )
+    result = subprocess.run(
+        [OPENCODE_BIN, "run", prompt, "--print-logs", "--dir", str(review_dir),
+         "--model", MODEL, "--dangerously-skip-permissions"],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    passed = "PASS" in output.upper() and "FAIL" not in output.upper()
+    return passed, output[:500]
+
+
+def create_project(goal: str) -> dict[str, Any]:
+    """Create a project: plan → execute each step → review → loop on failure."""
+    project_id = _next_task_id()
+
+    project: dict[str, Any] = {
+        "project_id": project_id,
+        "goal": goal,
+        "status": "planning",
+        "steps": [],
+        "current_step": 0,
+        "total_steps": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_project(project)
+
+    # Run planning + execution in a background thread (LLM calls take time)
+    threading.Thread(target=_run_project_loop, args=(project_id,), daemon=True).start()
+
+    return {"project_id": project_id, "status": "planning", "goal": goal}
+
+
+def _project_path(project_id: str) -> Path:
+    return TASKS_DIR / f"_project_{project_id}.json"
+
+
+def _save_project(project: dict[str, Any]) -> None:
+    _project_path(project["project_id"]).write_text(json.dumps(project, indent=2, default=str))
+
+
+def _load_project(project_id: str) -> dict[str, Any] | None:
+    path = _project_path(project_id)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def _run_project_loop(project_id: str) -> None:
+    """Background: plan, execute project steps with oversight review loop."""
+    project = _load_project(project_id)
+    if not project:
+        return
+
+    # Step 1: Plan — break goal into steps using LLM
+    steps_raw = _llm_plan(project["goal"])
+    project["steps"] = [
+        {"label": s, "status": "pending", "attempts": 0, "max_attempts": 3,
+         "task_id": None, "review": None}
+        for s in steps_raw
+    ]
+    project["total_steps"] = len(project["steps"])
+    project["status"] = "running"
+    _save_project(project)
+
+    for idx, step in enumerate(project["steps"]):
+        project["current_step"] = idx
+        step["status"] = "running"
+        _save_project(project)
+
+        for attempt in range(step["max_attempts"]):
+            step["attempts"] = attempt + 1
+            # Execute the step as a task
+            task_result = submit_task(step["label"])
+            step["task_id"] = task_result.get("task_id")
+
+            # Wait for task completion (poll with timeout)
+            task_data = None
+            for _ in range(120):
+                task_data = _load_task(step["task_id"]) if step.get("task_id") else None
+                if task_data and task_data["status"] in ("done", "failed"):
+                    break
+                time.sleep(5)
+
+            # Review
+            task_data = _load_task(step["task_id"])
+            if task_data and task_data["status"] == "done":
+                passed, feedback = _llm_review(
+                    project["goal"], step["label"],
+                    task_data.get("summary", {}),
+                )
+                step["review"] = {"passed": passed, "feedback": feedback}
+                if passed:
+                    step["status"] = "done"
+                    _save_project(project)
+                    break
+                else:
+                    step["status"] = "review_failed"
+                    _save_project(project)
+                    if attempt < step["max_attempts"] - 1:
+                        # Re-plan the step based on feedback
+                        revised_goal = f"{step['label']} (REVISION: {feedback[:200]})"
+                        step["label"] = revised_goal
+            else:
+                step["status"] = "failed"
+                step["error"] = task_data.get("error", "unknown") if task_data else "no task data"
+                _save_project(project)
+                break
+        else:
+            # Exhausted all attempts
+            step["status"] = "failed"
+            step["error"] = f"Failed after {step['max_attempts']} attempts"
+            _save_project(project)
+            break
+
+    # Final status
+    all_done = all(s["status"] == "done" for s in project["steps"])
+    project["status"] = "completed" if all_done else "failed"
+    _save_project(project)
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 
@@ -404,6 +638,34 @@ class DevshopHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "task not found or already finished"}, 404)
 
+        elif path == "/self/edit":
+            if not body or "change" not in body:
+                self._send_json({"error": "missing 'change' in request body"}, 400)
+                return
+            change = str(body["change"]).strip()
+            if not change:
+                self._send_json({"error": "'change' must be non-empty"}, 400)
+                return
+            result = _self_edit(change)
+            if result.get("success"):
+                # Delay restart so the HTTP response is sent first
+                threading.Thread(
+                    target=lambda: (time.sleep(1), os._exit(0)),
+                    daemon=True,
+                ).start()
+            self._send_json(result, 200 if result.get("success") else 500)
+
+        elif path == "/project":
+            if not body or "goal" not in body:
+                self._send_json({"error": "missing 'goal' in request body"}, 400)
+                return
+            goal = str(body["goal"]).strip()
+            if not goal:
+                self._send_json({"error": "'goal' must be non-empty"}, 400)
+                return
+            result = create_project(goal)
+            self._send_json(result, 202)
+
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -423,7 +685,59 @@ class DevshopHandler(BaseHTTPRequestHandler):
                 "allow_dangerous": ALLOW_DANGEROUS, "version": "0.1.0",
             })
 
-        elif path.startswith("/task/"):
+        elif path == "/capabilities":
+            self._send_json({
+                "endpoints": [
+                    {"method": "GET", "path": "/status", "desc": "Server health and queue depth"},
+                    {"method": "GET", "path": "/capabilities", "desc": "List all available endpoints"},
+                    {"method": "GET", "path": "/task/<id>", "desc": "Compact task status"},
+                    {"method": "GET", "path": "/task/<id>/wait", "desc": "Long-poll task completion"},
+                    {"method": "GET", "path": "/task/<id>/files", "desc": "List generated files with content"},
+                    {"method": "GET", "path": "/task/<id>/files/<path>", "desc": "Single file content"},
+                    {"method": "GET", "path": "/project/<id>", "desc": "Project status with step breakdown"},
+                    {"method": "POST", "path": "/task", "desc": "Submit a goal"},
+                    {"method": "POST", "path": "/plan", "desc": "Multi-step plan"},
+                    {"method": "POST", "path": "/cancel/<id>", "desc": "Cancel a task"},
+                    {"method": "POST", "path": "/self/edit", "desc": "Self-modify server code"},
+                    {"method": "POST", "path": "/project", "desc": "Create project with oversight loop"},
+                ],
+                "model": MODEL,
+                "allow_dangerous": ALLOW_DANGEROUS,
+                "version": "0.1.0",
+            })
+
+        elif path == "/project/list":
+            projects = sorted(TASKS_DIR.glob("_project_*.json"))
+            ids = [p.stem.replace("_project_", "") for p in projects]
+            self._send_json({"projects": ids})
+
+        elif path.startswith("/project/"):
+            project_id = path[9:]
+            project = _load_project(project_id)
+            if project is None:
+                self._send_json({"error": "project not found"}, 404)
+                return
+            # Return compact view (omit large fields)
+            view = {
+                "project_id": project["project_id"],
+                "goal": project["goal"],
+                "status": project["status"],
+                "current_step": project["current_step"],
+                "total_steps": project["total_steps"],
+                "steps": [
+                    {
+                        "label": s["label"],
+                        "status": s["status"],
+                        "attempts": s["attempts"],
+                        "task_id": s["task_id"],
+                        "review_passed": s.get("review", {}).get("passed") if s.get("review") else None,
+                        "review_feedback": (s.get("review", {}).get("feedback", "")[:200]
+                                            if s.get("review") else None),
+                    }
+                    for s in project["steps"]
+                ],
+            }
+            self._send_json(view)
             remainder = path[6:]
             parts = remainder.split("/", 1)
             task_id = parts[0]
