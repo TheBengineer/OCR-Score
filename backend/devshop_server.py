@@ -40,7 +40,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,7 @@ DEFAULT_PORT = 8900
 OPENCODE_BIN = ""
 TASKS_DIR: Path = Path("/tmp/devshop_tasks")
 ALLOW_DANGEROUS = False
+MODEL = "opencode-go/deepseek-v4-flash"
 START_TIME = time.time()
 _lock = threading.Lock()
 
@@ -116,7 +117,7 @@ def _worker_loop() -> None:
             workdir = Path(task["workdir"])
 
             cmd = [OPENCODE_BIN, "run", goal, "--print-logs", "--dir", str(workdir),
-                   "--model", "opencode-go/deepseek-v4-flash"]
+                   "--model", MODEL]
             if ALLOW_DANGEROUS:
                 cmd.insert(3, "--dangerously-skip-permissions")
 
@@ -169,6 +170,9 @@ def _worker_loop() -> None:
 
         with _lock:
             _current_task = None
+            # Re-arm worker event if more tasks are queued (avoids backlog)
+            if _task_queue:
+                _worker_event.set()
 
         # If this task is part of a plan chain, submit the next step
         plan_queue = task.get("_plan_queue")
@@ -496,6 +500,13 @@ def main() -> None:
     if "--allow-dangerous" in args:
         ALLOW_DANGEROUS = True
 
+    if "--model" in args:
+        idx = args.index("--model")
+        global MODEL  # noqa: PLW0603
+        MODEL = args[idx + 1]
+    elif os.environ.get("DEVSHOP_MODEL"):
+        MODEL = os.environ.get("DEVSHOP_MODEL", MODEL)
+
     if "--tasks-dir" in args:
         idx = args.index("--tasks-dir")
         TASKS_DIR = Path(args[idx + 1])
@@ -509,11 +520,13 @@ def main() -> None:
         sys.exit(1)
 
     if not ALLOW_DANGEROUS:
-        print("NOTE: Running WITHOUT --allow-dangerous.", flush=True)
-        print("  opencode will prompt for permission on every file write.", flush=True)
-        print("  Tasks may hang waiting for input. Add --allow-dangerous if safe.", flush=True)
+        print("ERROR: --allow-dangerous is required for non-interactive operation.", file=sys.stderr)
+        print("  Without it, opencode prompts for permission on every file write", file=sys.stderr)
+        print("  and tasks will hang indefinitely waiting for stdin input.", file=sys.stderr)
+        print("  Pass --allow-dangerous to enable (only on trusted networks).", file=sys.stderr)
+        sys.exit(1)
 
-    server = HTTPServer(("0.0.0.0", port), DevshopHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), DevshopHandler)
     print(f"Devshop server listening on http://0.0.0.0:{port}", flush=True)
     print(f"  OPENCODE_BIN={OPENCODE_BIN}", flush=True)
     print(f"  ALLOW_DANGEROUS={ALLOW_DANGEROUS}", flush=True)
